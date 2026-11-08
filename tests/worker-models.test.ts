@@ -1,0 +1,18 @@
+import { expect, test } from 'bun:test';
+import { analyzeImage, embedQuery } from '../worker/models';
+import sharp from 'sharp';
+
+test('generates image metadata and uses a document embedding prefix', async () => {
+	const calls: { url: string; body: Record<string, unknown> }[] = [];
+	const fetcher = async (url: string | URL, init?: RequestInit) => {
+		const body = JSON.parse(String(init?.body)); calls.push({ url: String(url), body });
+		return new Response(JSON.stringify(String(url).endsWith('/api/generate') ? { response: JSON.stringify({ description: 'A cat', extracted_text: 'hello', tags: ['cat'] }) } : { embeddings: [Array(768).fill(0.1)] }));
+	};
+	const image = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#ffffff' } }).png().toBuffer();
+	const result = await analyzeImage(image, { ollamaUrl: 'http://localhost:11434', visionModel: 'vision', embeddingModel: 'embed' }, fetcher);
+	expect(result.description).toBe('A cat');
+	expect(result.tags).toEqual(['cat']);
+	expect(String(calls[1].body.input)).toStartWith('search_document: ');
+	await embedQuery('mèo', { ollamaUrl: 'http://localhost:11434', visionModel: 'vision', embeddingModel: 'embed' }, fetcher);
+	expect(String(calls[2].body.input)).toBe('search_query: mèo');
+});

@@ -1,0 +1,43 @@
+import { afterAll, expect, test } from 'bun:test';
+import { SQL } from 'bun';
+import { randomUUID } from 'node:crypto';
+import { claimJob, completeImageJob, completeQueryJob, findSimilar, requestSemanticMatches, retryItemAnalysis } from '../src/lib/server/ai';
+
+const url = process.env.TEST_DATABASE_URL;
+if (!url || !new URL(url).pathname.endsWith('_test')) throw new Error('TEST_DATABASE_URL must point to a test database');
+const sql = new SQL(url); const owner = randomUUID(); const item = randomUUID();
+afterAll(async () => { await sql`DELETE FROM users WHERE id = ${owner}`; await sql.close(); });
+
+test('jobs are durable, leased and cannot overwrite owner edits', async () => {
+	await sql`INSERT INTO users (id, email, password_hash) VALUES (${owner}, ${owner + '@example.com'}, 'unused')`;
+	await sql`INSERT INTO items (id, owner_id, content_hash, storage_key, content_type, width, height, description) VALUES (${item}, ${owner}, 'hash', ${'c'.repeat(64)}, 'image/png', 1, 1, 'my edit')`;
+	const original = await claimJob(sql);
+	if (!original) throw new Error('Missing job');
+	await sql`UPDATE ai_jobs SET lease_until = now() - interval '1 second' WHERE id = ${original.id}`;
+	const job = await claimJob(sql);
+	expect(job?.kind).toBe('image');
+	if (!job) throw new Error('Missing job');
+	expect(job.id).toBe(original.id);
+	expect(job.leaseToken).not.toBe(original.leaseToken);
+	const embedding = Array.from({ length: 768 }, () => 0.1);
+	await expect(completeImageJob(sql, job.id, randomUUID(), { description: 'AI text', extractedText: 'text', tags: ['cat'], embedding, model: 'nomic-embed-text-v2-moe' })).rejects.toThrow();
+	await completeImageJob(sql, job.id, job.leaseToken, { description: 'AI text', extractedText: 'text', tags: ['cat'], embedding, model: 'nomic-embed-text-v2-moe' });
+	const rows = await sql`SELECT i.description, a.description AS ai_description FROM items i JOIN item_analysis a ON a.item_id = i.id WHERE i.id = ${item}`;
+	expect(rows[0]).toMatchObject({ description: 'my edit', ai_description: 'AI text' });
+	expect((await findSimilar(sql, owner, false, embedding, 'nomic-embed-text-v2-moe')).map((row) => row.id)).toContain(item);
+	expect(await findSimilar(sql, randomUUID(), false, embedding, 'nomic-embed-text-v2-moe')).toEqual([]);
+	expect(await findSimilar(sql, owner, false, embedding, 'different-model')).toEqual([]);
+	const pending = requestSemanticMatches(sql, owner, false, 'mèo mệt', 2000);
+	await Bun.sleep(100);
+	const queryJob = await claimJob(sql);
+	expect(queryJob?.kind).toBe('query');
+	if (!queryJob) throw new Error('Missing query job');
+	await completeQueryJob(sql, queryJob.id, queryJob.leaseToken, embedding, 'nomic-embed-text-v2-moe');
+	expect((await pending)?.map((row) => row.id)).toContain(item);
+	await expect(completeImageJob(sql, job.id, job.leaseToken, { description: 'AI text', extractedText: 'text', tags: ['cat'], embedding, model: 'nomic-embed-text-v2-moe' })).rejects.toThrow();
+	await sql`UPDATE ai_jobs SET state = 'failed', attempts = 5 WHERE id = ${job.id}`;
+	await expect(retryItemAnalysis(sql, randomUUID(), item)).rejects.toThrow();
+	await retryItemAnalysis(sql, owner, item);
+	const retried = await sql`SELECT state, attempts FROM ai_jobs WHERE id = ${job.id}`;
+	expect(retried[0]).toMatchObject({ state: 'pending', attempts: 0 });
+});

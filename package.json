@@ -1,0 +1,36 @@
+{
+  "name": "lmacaw",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --bun vite dev",
+    "build": "bun --bun vite build",
+    "start": "bun build/index.js",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "test": "bun test tests/*.test.ts",
+    "test:e2e": "playwright test",
+    "migrate": "bun run scripts/migrate.ts",
+    "bootstrap-admin": "bun run scripts/bootstrap-admin.ts",
+    "worker": "bun run worker/index.ts",
+    "cleanup-media": "bun run scripts/cleanup-media.ts",
+    "reindex": "bun run scripts/reindex.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "@sveltejs/adapter-node": "^5.4.0",
+    "@sveltejs/kit": "^2.70.3",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/bun": "^1.3.0",
+    "svelte": "^5.0.0",
+    "svelte-check": "^4.7.6",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1164.0",
+    "ipaddr.js": "^2.5.0",
+    "sharp": "^0.35.5"
+  }
+}

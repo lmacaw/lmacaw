@@ -32,7 +32,7 @@ ollama pull nomic-embed-text-v2-moe
 bun install --frozen-lockfile
 ```
 
-Set `LMACAW_URL` to the app's HTTPS origin and set `AI_WORKER_TOKEN` to the same value as the server. HTTP is accepted only for localhost. Set `OLLAMA_URL`, `AI_VISION_MODEL`, or `AI_EMBEDDING_MODEL` to override the defaults, then run:
+On Arch Linux with an NVIDIA GPU, install `ollama-cuda` and run `sudo systemctl enable --now ollama`; on macOS, install Ollama with Homebrew or the app. Set `LMACAW_URL` to the app's HTTPS origin and set `AI_WORKER_TOKEN` to the same value as the server. HTTP is accepted only for localhost. Set `OLLAMA_URL`, `AI_VISION_MODEL`, or `AI_EMBEDDING_MODEL` to override the defaults, then run:
 
 ```sh
 bun run worker

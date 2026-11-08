@@ -102,7 +102,7 @@ Verify sign-in and image access before using the restored server. For S3 storage
 
 ## Development and checks
 
-Use Bun 1.3.11 or newer and a dedicated PostgreSQL database with pgvector. Set `DATABASE_URL` and `MEDIA_ROOT`, then run `bun install --frozen-lockfile`, `bun run migrate`, `bun run bootstrap-admin`, and `bun run dev`.
+Use Bun 1.4.4 or newer and a dedicated PostgreSQL database with pgvector. Earlier Bun versions can hand a pooled database connection that is still inside a transaction to an unrelated query, which can stall every other connection; `tests/db.test.ts` fails on them. Set `DATABASE_URL` and `MEDIA_ROOT`, then run `bun install --frozen-lockfile`, `bun run migrate`, `bun run bootstrap-admin`, and `bun run dev`.
 
 Integration tests require a disposable database whose name ends in `_test`; set `TEST_DATABASE_URL` to that database and apply migrations before running `bun run test`. Set `TEST_S3_ENDPOINT` to run the S3 integration test. Browser tests require a separate database whose name ends in `_e2e_test`, a test administrator with email `admin@example.com` and password `a long admin password`, and Playwright Chromium. Set `DATABASE_URL` and `MEDIA_ROOT` to test-only locations before running `bun run test:e2e`. The browser tests remove that test administrator's items and collections.
 

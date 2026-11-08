@@ -65,7 +65,7 @@ textarea.input { resize: vertical; }
 .auth-card .button { height: 38px; margin-top: 16px; }
 .auth-card .error { margin-top: 12px; }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 640; font-size: 15px; letter-spacing: -.01em; }
-.brand-mark { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; background: var(--accent); color: var(--on-accent); font-size: 13px; font-weight: 700; }
+.brand-mark { display: block; width: 24px; height: 24px; border-radius: 6px; }
 
 /* Shell */
 .app-shell { min-height: 100dvh; display: grid; grid-template-columns: 236px minmax(0, 1fr); }

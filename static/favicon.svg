@@ -1,0 +1,22 @@
+<!-- Lmacaw app icon: stylised scarlet macaw. Original artwork, AGPL-3.0 with the app. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1D4BB0"/><stop offset="1" stop-color="#16336F"/></linearGradient>
+    <clipPath id="tile"><rect width="512" height="512" rx="114"/></clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="512" height="512" fill="url(#bg)"/>
+    <g transform="translate(256 256) scale(1.45) translate(-300 -235)">
+    <!-- neck and head -->
+    <path d="M40 560 C55 420 110 300 170 230 C200 150 270 110 330 140 C370 160 380 210 360 250 C330 310 290 360 270 420 C258 460 258 520 262 560 Z" fill="#E2382B"/>
+    <!-- face patch -->
+    <path d="M300 150 C345 150 372 185 365 225 C358 262 330 280 300 272 C272 264 262 235 268 205 C274 175 285 152 300 150 Z" fill="#FBF8F2"/>
+    <circle cx="318" cy="204" r="22" fill="#1B1B22"/>
+    <circle cx="325" cy="197" r="6" fill="#FBF8F2"/>
+    <!-- upper beak -->
+    <path d="M352 168 C410 160 452 200 450 262 C448 300 430 330 404 346 C410 318 404 296 388 282 C374 270 356 268 344 262 C356 232 360 198 352 168 Z" fill="#F2EADB"/>
+    <!-- lower beak -->
+    <path d="M344 262 C360 268 378 274 388 286 C376 310 352 322 330 318 C334 300 338 280 344 262 Z" fill="#1B1B22"/>
+    </g>
+  </g>
+</svg>

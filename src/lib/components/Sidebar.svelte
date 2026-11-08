@@ -23,7 +23,7 @@
 <svelte:window onkeydown={(event) => { if (open && event.key === 'Escape') onclose(); }} />
 {#if open}<button class="scrim" aria-label="Close menu" onclick={onclose}></button>{/if}
 <aside class="sidebar" class:open bind:this={sidebar}>
-	<div class="brand"><span class="brand-mark">L</span><span>Lmacaw</span></div>
+	<div class="brand"><img class="brand-mark" src="/favicon.svg" alt="" width="24" height="24" /><span>Lmacaw</span></div>
 	<nav aria-label="Library">
 		{#each views as view (view.scope)}
 			<button class="nav-item" class:active={scope === view.scope} aria-current={scope === view.scope ? 'page' : undefined} onclick={() => onselect(view.scope)}>

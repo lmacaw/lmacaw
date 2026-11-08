@@ -257,7 +257,7 @@
 {#if !user}
 	<main class="auth-shell">
 		<div class="auth-card">
-			<div class="brand"><span class="brand-mark">L</span><span>Lmacaw</span></div>
+			<div class="brand"><img class="brand-mark" src="/favicon.svg" alt="" width="24" height="24" /><span>Lmacaw</span></div>
 			<h1>Sign in</h1>
 			<form onsubmit={signIn}>
 				<label class="field-label" for="email">Email</label>

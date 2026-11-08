@@ -20,7 +20,7 @@
 	let current: Item | null = $state(null);
 	let invitationLink = $state('');
 	let formDialog: HTMLDialogElement = $state(undefined!), fileInput: HTMLInputElement = $state(undefined!);
-	let form = $state<{ kind: 'url' | 'collection' | 'rename'; value: string; error: string }>({ kind: 'url', value: '', error: '' });
+	let form = $state<{ kind: 'url' | 'collection' | 'rename'; value: string; error: string; progress: string }>({ kind: 'url', value: '', error: '', progress: '' });
 	let requestNumber = 0, searchTimer: ReturnType<typeof setTimeout> | undefined;
 
 	const collectionName = $derived(collections.find((collection) => collection.id === selectedCollection)?.name ?? 'Collection');
@@ -198,17 +198,32 @@
 	}
 
 	function openForm(kind: 'url' | 'collection' | 'rename') {
-		form = { kind, value: kind === 'rename' ? collectionName : '', error: '' };
+		form = { kind, value: kind === 'rename' ? collectionName : '', error: '', progress: '' };
 		formDialog.showModal();
 	}
 	async function submitForm(event: SubmitEvent) {
 		event.preventDefault(); form.error = '';
 		try {
 			if (form.kind === 'url') {
-				const response = await api('/api/v1/import', 'POST', { url: form.value });
-				if (!response.ok) { form.error = 'Unable to import image. Use a public link to a PNG, JPEG, WebP, or GIF.'; return; }
-				formDialog.close(); notify((await response.json()).duplicate ? 'Already in your library.' : 'Added.');
-				if (scope !== 'library') select('library'); else await refresh();
+				// One URL per line, imported one at a time; failed lines stay in the box to retry.
+				const urls = [...new Set(form.value.split('\n').map((line) => line.trim()).filter(Boolean))];
+				if (!urls.length) { form.error = 'Paste at least one image URL.'; return; }
+				if (urls.length > 50) { form.error = 'Paste up to 50 URLs at a time.'; return; }
+				const failed: string[] = []; let added = 0, duplicates = 0;
+				for (const [index, url] of urls.entries()) {
+					form.progress = `Importing ${index + 1} of ${urls.length}…`;
+					const attempt = () => api('/api/v1/import', 'POST', { url }).catch(() => null);
+					let response = await attempt();
+					if (!response?.ok) response = await attempt(); // one retry: remote hosts fail now and then
+					if (!response?.ok) { failed.push(url); continue; }
+					if ((await response.json()).duplicate) duplicates++; else added++;
+				}
+				form.progress = '';
+				if (added || duplicates) { if (scope !== 'library') select('library'); else await refresh(); }
+				const summary = [added && `Added ${added}.`, duplicates && `${duplicates} already in your library.`].filter(Boolean).join(' ');
+				if (!failed.length) { formDialog.close(); notify(summary || 'Added.'); return; }
+				form.value = failed.join('\n');
+				form.error = `${summary} ${failed.length === 1 ? '1 link' : `${failed.length} links`} could not be imported. Use public links to PNG, JPEG, WebP, or GIF files.`.trim();
 			} else if (form.kind === 'collection') {
 				const response = await api('/api/v1/collections', 'POST', { name: form.value });
 				if (!response.ok) { form.error = 'Could not create collection. Names must be unique.'; return; }
@@ -345,8 +360,10 @@
 		<form onsubmit={submitForm}>
 			<h2 id="form-title">{form.kind === 'url' ? 'Add URL' : form.kind === 'collection' ? 'New collection' : 'Rename collection'}</h2>
 			{#if form.kind === 'url'}
-				<label class="field-label" for="form-value">Image URL</label>
-				<input id="form-value" class="input" type="url" placeholder="https://" bind:value={form.value} required />
+				<label class="field-label" for="form-value">Image URLs</label>
+				<textarea id="form-value" class="input url-list" rows="5" placeholder={'https://…/first.jpg\nhttps://…/second.gif'} aria-describedby="form-hint" bind:value={form.value} required
+					onkeydown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) event.currentTarget.form?.requestSubmit(); }}></textarea>
+				<p id="form-hint" class="hint">One link per line.</p>
 			{:else}
 				<label class="field-label" for="form-value">Collection name</label>
 				<input id="form-value" class="input" maxlength="80" bind:value={form.value} required />
@@ -354,7 +371,7 @@
 			{#if form.error}<p class="error" role="alert">{form.error}</p>{/if}
 			<div class="form-actions">
 				<button class="button ghost" type="button" onclick={() => formDialog.close()}>Cancel</button>
-				<button class="button primary" type="submit">{form.kind === 'url' ? 'Import' : form.kind === 'collection' ? 'Create' : 'Rename'}</button>
+				<button class="button primary" type="submit" disabled={Boolean(form.progress)}>{form.progress || (form.kind === 'url' ? 'Import' : form.kind === 'collection' ? 'Create' : 'Rename')}</button>
 			</div>
 		</form>
 	</dialog>

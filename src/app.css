@@ -146,6 +146,7 @@ dialog::backdrop { background: var(--scrim); }
 .form-dialog { width: min(400px, calc(100vw - 32px)); }
 .form-dialog form { display: grid; gap: 8px; padding: 20px; }
 .form-dialog h2 { margin-bottom: 6px; font-size: 15px; font-weight: 620; }
+.url-list { min-height: 112px; font-size: 13px; line-height: 1.5; white-space: pre; overflow-x: auto; }
 .form-actions { display: flex; justify-content: end; gap: 6px; margin-top: 10px; }
 
 /* Touch devices: tap opens detail; no hover-only controls. */

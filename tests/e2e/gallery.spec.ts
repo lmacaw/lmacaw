@@ -113,7 +113,7 @@ test('a member can sign in, upload, and view a meme', async ({ page, browserName
 	await page.getByRole('button', { name: 'Add URL' }).click();
 	await page.getByLabel('Image URL').fill('http://127.0.0.1/private');
 	await page.getByRole('button', { name: 'Import', exact: true }).click();
-	await expect(page.getByRole('alert')).toContainText('Unable to import image');
+	await expect(page.getByRole('alert')).toContainText('could not be imported');
 	await page.getByRole('button', { name: 'Cancel' }).click();
 	await page.route('**/api/v1/discover?q=cat', (route) => route.fulfill({ json: { items: [{ id: '067e6162-3b6f-4ae2-a171-2470b63dff00', title: 'Cat', thumbnail: '', attribution: 'Cat by A' }] } }));
 	await page.route('**/api/v1/discover/save', (route) => route.fulfill({ status: 201, json: { duplicate: false } }));
@@ -168,4 +168,13 @@ test('collections can be renamed and deleted without losing memes', async ({ pag
 	await expect(page.getByRole('button', { name: 'Good dogs', exact: true })).toHaveCount(0);
 	await expect(page.getByRole('heading', { name: 'Library' })).toBeVisible();
 	await expect(page.locator('[data-meme-tile]')).toHaveCount(1);
+});
+
+test('Add URL takes one link per line and keeps the ones that fail', async ({ page }) => {
+	await signIn(page);
+	await page.getByRole('button', { name: 'Add URL' }).click();
+	await page.getByLabel('Image URLs').fill('http://127.0.0.1/one.png\n\n  http://127.0.0.1/two.png  \nhttp://127.0.0.1/one.png');
+	await page.getByRole('button', { name: 'Import', exact: true }).click();
+	await expect(page.getByRole('alert')).toHaveText(/2 links could not be imported/);
+	await expect(page.getByLabel('Image URLs')).toHaveValue('http://127.0.0.1/one.png\nhttp://127.0.0.1/two.png');
 });

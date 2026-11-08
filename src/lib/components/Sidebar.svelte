@@ -15,10 +15,14 @@
 		{ scope: 'shared', label: 'Shared', icon: 'share' },
 		{ scope: 'discover', label: 'Discover', icon: 'globe' }
 	] as const;
+	let sidebar: HTMLElement = $state(undefined!);
+	// On small screens the sidebar is a drawer: move focus into it and let Escape close it.
+	$effect(() => { if (open) sidebar.querySelector<HTMLElement>('.nav-item')?.focus(); });
 </script>
 
+<svelte:window onkeydown={(event) => { if (open && event.key === 'Escape') onclose(); }} />
 {#if open}<button class="scrim" aria-label="Close menu" onclick={onclose}></button>{/if}
-<aside class="sidebar" class:open>
+<aside class="sidebar" class:open bind:this={sidebar}>
 	<div class="brand"><span class="brand-mark">L</span><span>Lmacaw</span></div>
 	<nav aria-label="Library">
 		{#each views as view (view.scope)}

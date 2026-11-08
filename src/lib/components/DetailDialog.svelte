@@ -3,12 +3,12 @@
 	import type { Collection, Item } from '$lib/types';
 
 	type Props = {
-		item: Item | null; readonly: boolean; collections: Collection[]; message: string; aiEnabled: boolean;
+		item: Item | null; canCopy: boolean; readonly: boolean; collections: Collection[]; message: string; aiEnabled: boolean;
 		onclose: () => void; oncopy: (item: Item) => void; onupdate: (item: Item, patch: Record<string, unknown>) => void;
 		ondelete: (item: Item) => void; onsave: (item: Item) => void; onretry: (item: Item) => void;
 		ontogglecollection: (collection: Collection, checked: boolean) => void;
 	};
-	let { item, readonly, collections, message, aiEnabled, onclose, oncopy, onupdate, ondelete, onsave, onretry, ontogglecollection }: Props = $props();
+	let { item, canCopy, readonly, collections, message, aiEnabled, onclose, oncopy, onupdate, ondelete, onsave, onretry, ontogglecollection }: Props = $props();
 	let dialog = $state<HTMLDialogElement>(undefined!);
 	let description = $state(''), tags = $state(''), text = $state(''), loadedId = '';
 
@@ -41,7 +41,7 @@
 			<div class="detail-media"><img src={`/api/v1/items/${item.id}/media`} alt={item.description || item.ai_description || 'Meme'} /></div>
 			<div class="detail-panel">
 				<div class="detail-toolbar">
-					<button class="icon-button" onclick={() => oncopy(item)} aria-label="Copy image" title="Copy image"><Icon name="copy" /></button>
+					{#if canCopy}<button class="icon-button" onclick={() => oncopy(item)} aria-label="Copy image" title="Copy image"><Icon name="copy" /></button>{/if}
 					<a class="icon-button" href={`/api/v1/items/${item.id}/media`} download aria-label="Download" title="Download"><Icon name="download" /></a>
 					{#if readonly}
 						<button class="icon-button" onclick={() => onsave(item)} aria-label="Save to library" title="Save to library"><Icon name="bookmark" /></button>
@@ -54,6 +54,7 @@
 					<button class="icon-button" onclick={() => dialog.close()} aria-label="Close" title="Close"><Icon name="x" /></button>
 				</div>
 				{#if message}<p class="detail-message" role="status">{message}</p>{/if}
+				{#if !canCopy}<p class="hint">This browser cannot copy images. Use Download instead.</p>{/if}
 				{#if aiLabel}
 					<p class="ai-state">{aiLabel}{#if item.ai_state === 'failed' && !readonly} <button class="text-button" onclick={() => onretry(item)}>Retry AI</button>{/if}</p>
 				{/if}

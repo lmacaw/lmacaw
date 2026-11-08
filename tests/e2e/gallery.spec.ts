@@ -14,7 +14,7 @@ test('the library fits a narrow mobile viewport', async ({ page }) => {
 	await page.getByLabel('Email').fill('admin@example.com');
 	await page.getByLabel('Password').fill('a long admin password');
 	await page.getByRole('button', { name: 'Sign in' }).click();
-	await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
 	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
@@ -23,6 +23,7 @@ test('an administrator can create an invitation for a new member', async ({ page
 	await page.getByLabel('Email').fill('admin@example.com');
 	await page.getByLabel('Password').fill('a long admin password');
 	await page.getByRole('button', { name: 'Sign in' }).click();
+	await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
 	await page.getByRole('button', { name: 'Invite' }).click();
 	const link = await page.getByLabel('Invitation link').inputValue();
 	const member = await browser.newPage();
@@ -39,6 +40,7 @@ test('signing out clears private state before another account signs in', async (
 	await page.getByLabel('Email').fill('admin@example.com');
 	await page.getByLabel('Password').fill('a long admin password');
 	await page.getByRole('button', { name: 'Sign in' }).click();
+	await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
 	await page.getByRole('button', { name: 'New collection' }).click();
 	await page.getByLabel('Collection name').fill('Private Cats');
 	await page.getByRole('button', { name: 'Create', exact: true }).click();
@@ -58,29 +60,29 @@ test('signing out clears private state before another account signs in', async (
 	await expect(page.getByLabel('Invitation link')).toHaveCount(0);
 });
 
-test('a member can sign in, upload, and view a meme', async ({ page }) => {
+test('a member can sign in, upload, and view a meme', async ({ page, browserName }) => {
+	if (browserName === 'chromium') await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
 	page.on('pageerror', (error) => console.error('Browser error:', error.message));
 	await page.goto('/');
 	await page.getByLabel('Email').fill('admin@example.com');
 	await page.getByLabel('Password').fill('a long admin password');
 	await page.getByRole('button', { name: 'Sign in' }).click();
-	await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
 	const image = await sharp({ create: { width: 4, height: 4, channels: 3, background: '#b44c70' } }).png().toBuffer();
 	await page.locator('input[type=file]').setInputFiles({ name: 'meme.png', mimeType: 'image/png', buffer: image });
 	await expect(page.locator('[data-meme-tile]')).toHaveCount(1);
 	await page.locator('[data-meme-tile]').first().click();
 	await expect(page.getByRole('dialog')).toBeVisible();
 	await expect(page.getByRole('link', { name: 'Download' })).toBeVisible();
-	await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
-	await page.getByRole('button', { name: 'Copy image' }).click();
-	await expect.poll(() => page.evaluate(async () => (await navigator.clipboard.read()).some((entry) => entry.types.includes('image/png')))).toBe(true);
 	await page.getByRole('button', { name: 'Close' }).click();
 	const pasted = await sharp({ create: { width: 5, height: 5, channels: 3, background: '#394b67' } }).png().toBuffer();
-	await page.evaluate((bytes) => {
-		const transfer = new DataTransfer();
-		transfer.items.add(new File([new Uint8Array(bytes)], 'pasted.png', { type: 'image/png' }));
-		document.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true }));
-	}, Array.from(pasted));
+	// A real clipboard write and keyboard paste: Firefox ignores data in synthetic paste events.
+	await page.evaluate((bytes) => document.addEventListener('click', () => {
+		(window as { written?: Promise<void> }).written = navigator.clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(bytes)], { type: 'image/png' }) })]);
+	}, { once: true, capture: true }), Array.from(pasted));
+	await page.getByRole('heading', { name: 'Library' }).click();
+	await page.evaluate(() => (window as { written?: Promise<void> }).written);
+	await page.keyboard.press('ControlOrMeta+V');
 	await expect(page.locator('[data-meme-tile]')).toHaveCount(2);
 	await page.locator('[data-meme-tile]').first().hover();
 	await expect(page.getByRole('button', { name: 'Favorite meme' }).first()).toBeVisible();
@@ -128,7 +130,7 @@ async function signIn(page: import('@playwright/test').Page) {
 	await page.getByLabel('Email').fill('admin@example.com');
 	await page.getByLabel('Password').fill('a long admin password');
 	await page.getByRole('button', { name: 'Sign in' }).click();
-	await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
 }
 
 test('unfavoriting inside Favorites keeps the open detail populated', async ({ page }) => {

@@ -2,8 +2,8 @@
 	import Icon from './Icon.svelte';
 	import type { Item } from '$lib/types';
 
-	type Props = { items: Item[]; shared: boolean; onopen: (item: Item) => void; oncopy: (item: Item) => void; onfavorite: (item: Item) => void; onsave: (item: Item) => void };
-	let { items, shared, onopen, oncopy, onfavorite, onsave }: Props = $props();
+	type Props = { items: Item[]; canCopy: boolean; shared: boolean; onopen: (item: Item) => void; oncopy: (item: Item) => void; onfavorite: (item: Item) => void; onsave: (item: Item) => void };
+	let { items, canCopy, shared, onopen, oncopy, onfavorite, onsave }: Props = $props();
 </script>
 
 <ul class="gallery" aria-label="Memes">
@@ -14,7 +14,11 @@
 				<img src={`/api/v1/items/${item.id}/media?size=thumbnail`} alt="" loading="lazy" decoding="async" />
 			</button>
 			<div class="tile-actions">
-				<button class="tile-action" aria-label="Copy meme" title="Copy" onclick={() => oncopy(item)}><Icon name="copy" size={16} /></button>
+				{#if canCopy}
+					<button class="tile-action" aria-label="Copy meme" title="Copy" onclick={() => oncopy(item)}><Icon name="copy" size={16} /></button>
+				{:else}
+					<a class="tile-action" href={`/api/v1/items/${item.id}/media`} download aria-label="Download meme" title="Download"><Icon name="download" size={16} /></a>
+				{/if}
 				{#if shared}
 					<button class="tile-action" aria-label="Save meme" title="Save to library" onclick={() => onsave(item)}><Icon name="bookmark" size={16} /></button>
 				{:else}

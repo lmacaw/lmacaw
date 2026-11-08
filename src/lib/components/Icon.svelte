@@ -16,7 +16,11 @@
 		image: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m20.5 16-5-5-9 8.5"/>',
 		pencil: '<path d="M4 20h4L19 9l-4-4L4 16Z"/>',
 		refresh: '<path d="M20 11a8 8 0 0 0-14.6-4M4 4v4h4M4 13a8 8 0 0 0 14.6 4M20 20v-4h-4"/>',
-		bookmark: '<path d="M6 4h12v16l-6-4-6 4Z"/>'
+		bookmark: '<path d="M6 4h12v16l-6-4-6 4Z"/>',
+		sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
+		moon: '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z"/>',
+		monitor: '<rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/>',
+		logout: '<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16l-4-4 4-4M6 12h10"/>'
 	} as const;
 	let { name, size = 18, filled = false }: { name: keyof typeof paths; size?: number; filled?: boolean } = $props();
 </script>

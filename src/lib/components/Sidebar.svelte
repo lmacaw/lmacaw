@@ -15,6 +15,12 @@
 		{ scope: 'shared', label: 'Shared', icon: 'share' },
 		{ scope: 'discover', label: 'Discover', icon: 'globe' }
 	] as const;
+	// One button cycles the appearance: system → light → dark.
+	const themes = {
+		system: { label: 'System', icon: 'monitor', next: 'light' },
+		light: { label: 'Light', icon: 'sun', next: 'dark' },
+		dark: { label: 'Dark', icon: 'moon', next: 'system' }
+	} as const;
 	let sidebar: HTMLElement = $state(undefined!);
 	// On small screens the sidebar is a drawer: move focus into it and let Escape close it.
 	$effect(() => { if (open) sidebar.querySelector<HTMLElement>('.nav-item')?.focus(); });
@@ -47,10 +53,10 @@
 				<input id="invite-link" class="input compact" value={invitationLink} readonly onfocus={(event) => event.currentTarget.select()} />
 			{/if}
 		{/if}
-		<label class="field-label" for="theme">Appearance</label>
-		<select id="theme" class="input compact" value={theme} onchange={(event) => ontheme(event.currentTarget.value as 'system' | 'light' | 'dark')}>
-			<option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
-		</select>
-		<div class="account"><span class="account-email" title={email}>{email}</span><button class="text-button" onclick={onsignout}>Sign out</button></div>
+		<div class="account">
+			<span class="account-email" title={email}>{email}</span>
+			<button class="icon-button small" aria-label="Appearance: {themes[theme].label}" title="Appearance: {themes[theme].label}" onclick={() => ontheme(themes[theme].next)}><Icon name={themes[theme].icon} size={15} /></button>
+			<button class="icon-button small" aria-label="Sign out" title="Sign out" onclick={onsignout}><Icon name="logout" size={15} /></button>
+		</div>
 	</div>
 </aside>

@@ -1,0 +1,39 @@
+# Render Blueprint: Docker web service + PostgreSQL (pgvector). Media goes to S3-compatible
+# storage such as Cloudflare R2; enter the S3_* values in the Render Dashboard when prompted.
+services:
+  - type: web
+    name: lmacaw
+    runtime: docker
+    plan: starter
+    region: singapore
+    branch: main
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: lmacaw-db
+          property: connectionString
+      - key: MEDIA_STORAGE
+        value: s3
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: auto
+      - key: AI_WORKER_TOKEN
+        generateValue: true
+      - key: BODY_SIZE_LIMIT
+        value: "23068672"
+databases:
+  - name: lmacaw-db
+    plan: basic-256mb
+    region: singapore
+    postgresMajorVersion: "17"
+    databaseName: lmacaw
+    user: lmacaw
+    ipAllowList: []

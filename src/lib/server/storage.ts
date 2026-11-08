@@ -85,7 +85,7 @@ export function storageFromEnv(): Storage {
 	if (process.env.MEDIA_STORAGE === 's3') {
 		const bucket = process.env.S3_BUCKET;
 		if (!bucket || !process.env.S3_ENDPOINT || !process.env.S3_ACCESS_KEY_ID || !process.env.S3_SECRET_ACCESS_KEY) throw new Error('S3 storage configuration is incomplete');
-		const client = new S3Client({ endpoint: process.env.S3_ENDPOINT, region: process.env.S3_REGION || 'auto', forcePathStyle: true, credentials: { accessKeyId: process.env.S3_ACCESS_KEY_ID, secretAccessKey: process.env.S3_SECRET_ACCESS_KEY } });
+		const client = new S3Client({ endpoint: process.env.S3_ENDPOINT, region: process.env.S3_REGION || 'auto', forcePathStyle: true, requestChecksumCalculation: 'WHEN_REQUIRED', responseChecksumValidation: 'WHEN_REQUIRED', credentials: { accessKeyId: process.env.S3_ACCESS_KEY_ID, secretAccessKey: process.env.S3_SECRET_ACCESS_KEY } });
 		return selectedStorage = new S3Storage(client, bucket);
 	}
 	if (process.env.MEDIA_STORAGE && process.env.MEDIA_STORAGE !== 'filesystem') throw new Error('Invalid MEDIA_STORAGE');

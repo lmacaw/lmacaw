@@ -18,4 +18,5 @@ COPY --from=build --chown=bun:bun /app/worker ./worker
 USER bun
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD bun -e "const r = await fetch('http://127.0.0.1:3000/api/health'); process.exit(r.ok ? 0 : 1)"
-CMD ["sh", "-c", "bun run migrate && bun run cleanup-media && bun run start"]
+# ORIGIN falls back to the URL Render assigns, so a Render deploy needs no manual ORIGIN.
+CMD ["sh", "-c", "export ORIGIN=\"${ORIGIN:-$RENDER_EXTERNAL_URL}\" && bun run migrate && bun run cleanup-media && bun run start"]

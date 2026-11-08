@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import Gallery from '$lib/components/Gallery.svelte';
 	import DetailDialog from '$lib/components/DetailDialog.svelte';
@@ -10,7 +10,8 @@
 	const user = $derived(data.user);
 
 	let email = $state(''), password = $state(''), ready = $state(false);
-	let message = $state(''), messageTimer: ReturnType<typeof setTimeout> | undefined;
+	let message = $state(''), messageDownload = $state<Item | null>(null), messageTimer: ReturnType<typeof setTimeout> | undefined;
+	let canCopy = $state(true), menuButton: HTMLButtonElement = $state(undefined!);
 	let scope = $state<Scope>('library'), selectedCollection = $state(''), query = $state('');
 	let theme = $state<'system' | 'light' | 'dark'>('system'), menuOpen = $state(false), dragging = $state(false);
 	let items: Item[] = $state([]), loaded = $state(false), hasMore = $state(false), currentPage = 1, semanticAvailable = $state(false);
@@ -25,10 +26,11 @@
 	const collectionName = $derived(collections.find((collection) => collection.id === selectedCollection)?.name ?? 'Collection');
 	const title = $derived({ library: 'Library', favorites: 'Favorites', shared: 'Shared', discover: 'Discover', collection: collectionName }[scope]);
 
-	function notify(text: string) {
-		message = text;
+	// A message that offers a download stays longer, so there is time to reach its link.
+	function notify(text: string, download: Item | null = null) {
+		message = text; messageDownload = download;
 		if (messageTimer) clearTimeout(messageTimer);
-		messageTimer = setTimeout(() => { message = ''; }, 4000);
+		messageTimer = setTimeout(() => { message = ''; messageDownload = null; }, download ? 10000 : 4000);
 	}
 	async function api(path: string, method = 'GET', body?: unknown) {
 		return fetch(path, body === undefined ? { method } : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -59,8 +61,14 @@
 		const response = await fetch('/api/v1/collections');
 		if (response.ok) collections = (await response.json()).collections;
 	}
+	function closeMenu() {
+		if (!menuOpen) return;
+		// Focus after the workspace stops being inert.
+		menuOpen = false; void tick().then(() => menuButton?.focus());
+	}
 	function select(next: Scope, collection = '') {
-		scope = next; selectedCollection = collection; menuOpen = false; query = ''; discoveries = [];
+		closeMenu();
+		scope = next; selectedCollection = collection; query = ''; discoveries = [];
 		items = []; loaded = false; void refresh();
 	}
 
@@ -135,20 +143,31 @@
 		if (!response.ok) { notify('Could not delete meme.'); return; }
 		current = null; await refresh();
 	}
-	async function copyImage(item: Item) {
-		try {
-			const blob = await (await fetch(`/api/v1/items/${item.id}/media`)).blob();
-			let png = blob;
-			if (blob.type !== 'image/png') {
-				const image = await createImageBitmap(blob);
-				const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
-				const context = canvas.getContext('2d'); if (!context) throw new Error('Canvas unavailable');
-				context.drawImage(image, 0, 0); image.close();
-				png = await new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => (value ? resolve(value) : reject(new Error('Copy failed'))), 'image/png'));
-			}
-			await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
-			notify(item.content_type === 'image/gif' ? 'Copied first frame. Download to keep the animation.' : 'Copied.');
-		} catch { notify('Copy unavailable. Download the original instead.'); }
+	// Clipboards accept PNG, not GIF, so animated GIFs copy their first frame only.
+	async function pngOf(item: Item): Promise<Blob> {
+		const response = await fetch(`/api/v1/items/${item.id}/media`);
+		if (!response.ok) throw new Error('Media unavailable');
+		const blob = await response.blob();
+		if (blob.type === 'image/png') return blob;
+		const image = await createImageBitmap(blob);
+		const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+		const context = canvas.getContext('2d'); if (!context) throw new Error('Canvas unavailable');
+		context.drawImage(image, 0, 0); image.close();
+		return new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => (value ? resolve(value) : reject(new Error('Copy failed'))), 'image/png'));
+	}
+	function copyImage(item: Item) {
+		if (!canCopy) { notify('This browser cannot copy images. Download the original instead.', item); return; }
+		// Write synchronously inside the click, passing the image as a promise. Firefox and Safari
+		// reject a clipboard write that starts after an await, because the click no longer counts.
+		const png = pngOf(item);
+		png.catch(() => {}); // reported through the write below
+		let write: Promise<void>;
+		try { write = navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]); }
+		catch (error) { write = Promise.reject(error); }
+		write.then(
+			() => notify(item.content_type === 'image/gif' ? 'Copied first frame. Download to keep the animation.' : 'Copied.'),
+			() => notify('Could not copy. Download the original instead.', item)
+		);
 	}
 	async function saveShared(item: Item) {
 		const response = await fetch(`/api/v1/items/${item.id}/copy`, { method: 'POST' });
@@ -217,6 +236,8 @@
 
 	onMount(() => {
 		ready = true;
+		// Missing on older browsers and on plain-HTTP origins other than localhost.
+		canCopy = window.isSecureContext && typeof ClipboardItem === 'function' && typeof navigator.clipboard?.write === 'function';
 		try { const saved = localStorage.getItem('lmacaw-theme'); if (saved === 'light' || saved === 'dark') setTheme(saved); } catch { /* storage unavailable */ }
 		if (!user) return;
 		void refresh(); void refreshCollections();
@@ -259,11 +280,11 @@
 			{scope} {selectedCollection} {collections} {theme} {invitationLink} open={menuOpen}
 			email={user.email} isAdmin={user.isAdmin}
 			onselect={select} onnewcollection={() => openForm('collection')} oninvite={invite}
-			ontheme={setTheme} onsignout={signOut} onclose={() => (menuOpen = false)}
+			ontheme={setTheme} onsignout={signOut} onclose={closeMenu}
 		/>
-		<main class="workspace">
+		<main class="workspace" inert={menuOpen}>
 			<header class="topbar">
-				<button class="icon-button menu-button" aria-label="Menu" onclick={() => (menuOpen = true)}><Icon name="menu" /></button>
+				<button class="icon-button menu-button" aria-label="Menu" aria-expanded={menuOpen} bind:this={menuButton} onclick={() => (menuOpen = true)}><Icon name="menu" /></button>
 				<h1>{title}</h1>
 				{#if scope === 'collection'}
 					<button class="icon-button" aria-label="Rename collection" title="Rename" onclick={() => openForm('rename')}><Icon name="pencil" size={16} /></button>
@@ -277,7 +298,7 @@
 				<button class="button ghost hide-small" onclick={() => openForm('url')}>Add URL</button>
 				<button class="icon-button show-small" aria-label="Add URL" onclick={() => openForm('url')}><Icon name="link" /></button>
 				<button class="button primary" disabled={!ready} onclick={() => fileInput.click()}>Add</button>
-				{#if ready}<input class="sr-only" tabindex="-1" bind:this={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onchange={(event) => { if (event.currentTarget.files) void addFiles(event.currentTarget.files); event.currentTarget.value = ''; }} />{/if}
+				{#if ready}<input hidden bind:this={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onchange={(event) => { if (event.currentTarget.files) void addFiles(event.currentTarget.files); event.currentTarget.value = ''; }} />{/if}
 			</header>
 
 			{#if query && scope !== 'discover' && loaded && !semanticAvailable}<p class="subtle-bar">Keyword results only. Semantic search is unavailable.</p>{/if}
@@ -299,7 +320,7 @@
 					<div class="empty"><p>{discovering ? 'Searching…' : 'Search openly licensed images on Openverse.'}</p><p class="hint">Results may include few memes. Check each license at its source.</p></div>
 				{/if}
 			{:else if items.length}
-				<Gallery {items} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} />
+				<Gallery {items} {canCopy} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} />
 				{#if hasMore}<div class="more"><button class="button ghost" onclick={() => refresh(currentPage + 1)}>Load more</button></div>{/if}
 			{:else if loaded}
 				<div class="empty">
@@ -311,11 +332,11 @@
 			{/if}
 		</main>
 		{#if dragging}<div class="drop-overlay" aria-hidden="true">Drop to add</div>{/if}
-		{#if message && !current}<p class="toast" role="status">{message}</p>{/if}
+		{#if message && !current}<p class="toast" role="status">{message}{#if messageDownload} <a href={`/api/v1/items/${messageDownload.id}/media`} download>Download</a>{/if}</p>{/if}
 	</div>
 
 	<DetailDialog
-		item={current} readonly={scope === 'shared'} collections={itemCollections} message={current ? message : ''} aiEnabled={data.aiEnabled}
+		item={current} {canCopy} readonly={scope === 'shared'} collections={itemCollections} message={current ? message : ''} aiEnabled={data.aiEnabled}
 		onclose={() => (current = null)} oncopy={copyImage} onupdate={updateItem} ondelete={removeItem}
 		onsave={saveShared} onretry={retryAi} ontogglecollection={toggleCollection}
 	/>

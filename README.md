@@ -27,7 +27,7 @@ PostgreSQL and image data use separate named volumes. Do not delete those volume
 Set a long, random `AI_WORKER_TOKEN` on the app and the worker. Install Bun and Ollama on the worker machine, then install the models and application dependencies:
 
 ```sh
-ollama pull qwen2.5vl:3b
+ollama pull gemma3:4b
 ollama pull nomic-embed-text-v2-moe
 bun install --frozen-lockfile
 ```
@@ -48,7 +48,18 @@ bun run reindex nomic-embed-text-v2-moe   # the new model name; omit it to re-em
 
 Until reindexing finishes, semantic search only matches items embedded with the worker's current model; keyword search still covers everything.
 
-The default models are starting points. Measured on 2026-11-08 on an Apple M3 Pro (36 GB) with Ollama and the default models: about 11 seconds per image for description, text extraction, and tags; about 2 seconds per uncached search query; an edited description was searchable about 3 seconds after saving. A small English/Vietnamese check found cross-language matches (for example, `con mèo ôm gấu bông` returned a cat-with-teddy-bear meme), but this is not a quality benchmark. NVIDIA hardware has not been tested. GIF analysis uses the first frame. Copying a GIF through the browser copies a still frame; download retains the original animation.
+The default models are `gemma3:4b` (vision) and `nomic-embed-text-v2-moe` (search). Measured on 2026-11-08 with Ollama 0.40.15 and `scripts/benchmark-search.ts` (30 Openverse photos, 10 topics, 20 English and 20 Vietnamese queries, recall@5):
+
+| Hardware | Vision model | 30 images | English | Vietnamese | Notes |
+| --- | --- | --- | --- | --- | --- |
+| RTX 3070 Ti 8 GB, EndeavourOS | `gemma3:4b` | 35 s | 20/20 | 20/20 | 5.5 GB VRAM with both models loaded |
+| Apple M3 Pro 36 GB | `gemma3:4b` | 80 s | 20/20 | 18/20 | |
+| Apple M3 Pro 36 GB | `qwen2.5vl:3b` | about 2 min | 20/20 | 17/20 | transcribes meme text most literally |
+| RTX 3070 Ti 8 GB | `qwen2.5vl:3b` | — | — | — | 3 of 30 photos fail: the CUDA build degenerates (`token repeat limit reached`); not recommended on NVIDIA |
+
+Uncached searches take about 2 seconds. `gemma3:4b` tends to normalise slang when transcribing (for example `i wuvs my teddy` becomes `i love my teddy`); owners can correct the text, or set `AI_VISION_MODEL=qwen2.5vl:3b` on Apple Silicon. `qwen3-vl:4b` spent its whole output budget reasoning and returned no answer. Ollama may place a model on the CPU if other models hold GPU memory when it loads; check `ollama ps` shows `100% GPU`.
+
+Reproduce against a disposable server, database, and running worker with `BENCH_URL`, `BENCH_EMAIL`, and `BENCH_PASSWORD` set: `bun run scripts/benchmark-search.ts`. It saves 3 Openverse images for each of 10 topics; results vary with Openverse content. Thirty photos is a small sample, not a quality guarantee. The worker only needs outbound access: to run it on another machine against a local test server, forward the port over SSH (`ssh -R 5199:127.0.0.1:5199 gpu-host`) and set `LMACAW_URL=http://127.0.0.1:5199` there. GIF analysis uses the first frame. Copying a GIF through the browser copies a still frame; download retains the original animation.
 
 ## Discover
 
@@ -56,9 +67,14 @@ Discover searches [Openverse](https://openverse.org) anonymously (20 results per
 
 ## Render
 
-Deploy the application repository as a Docker web service. Configure a persistent PostgreSQL database with the `vector` extension, private S3-compatible storage, `DATABASE_URL`, `MEDIA_STORAGE=s3`, the S3 variables, `ORIGIN` as the public HTTPS origin, and `BODY_SIZE_LIMIT=23068672`. Optionally set `AI_WORKER_TOKEN`.
+`render.yaml` is a Render Blueprint: a Docker web service (`starter`) deployed from `main`, and a PostgreSQL 17 database (`basic-256mb`, no public access) in Singapore. Change plans or region in the file before creating it. Render's filesystem is temporary, so media goes to S3-compatible storage; Cloudflare R2 works:
 
-The container runs migrations before starting. Create the administrator with the bootstrap command in a secure one-off environment connected to the same database. Render's default filesystem is temporary, so do not use it for uploaded media. If a trusted reverse proxy terminates TLS, configure the adapter's origin and client-address headers for that proxy; do not trust arbitrary client-supplied forwarded headers. Per-client rate limiting depends on obtaining the correct client address.
+1. In Cloudflare, create a private R2 bucket and an R2 API token with **Object Read & Write** on that bucket only. Note the bucket name, access key ID, secret, and the S3 endpoint `https://<account-id>.r2.cloudflarestorage.com`.
+2. In Render, choose **New → Blueprint**, connect `phucnht/lmacaw`, and enter `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY` when prompted. `AI_WORKER_TOKEN` is generated; copy it from the service's environment for the worker.
+3. The container runs migrations on start, and `ORIGIN` defaults to the URL Render assigns (`RENDER_EXTERNAL_URL`). Set `ORIGIN` yourself when you add a custom domain.
+4. Create the administrator once from the service's **Shell**, typing the values at the prompts so the password stays out of shell history: `read -r ADMIN_EMAIL; read -rs ADMIN_PASSWORD; export ADMIN_EMAIL ADMIN_PASSWORD; bun run bootstrap-admin`.
+
+Render's proxy appends to `X-Forwarded-For` without removing values a client sends, so the app does not trust that header. Sign-in rate limiting therefore applies to the proxy address and is shared by all members (10 attempts per minute). Do not set `ADDRESS_HEADER` unless you put a proxy that overwrites the header in front of Render.
 
 ## Backup and restore
 

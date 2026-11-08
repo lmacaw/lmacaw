@@ -32,9 +32,9 @@ for (;;) {
 				await postJob(job, { action: 'query', embedding: await embedQuery(job.query, config), model: config.embeddingModel });
 			}
 		} finally { clearInterval(heartbeat); }
-	} catch {
+	} catch (error) {
 		if (job) await postJob(job, { action: 'fail' }).catch(() => {});
-		console.error('Worker could not process a task; retrying.');
+		console.error(`Worker could not process a task (${error instanceof Error ? error.message : 'unknown error'}); retrying.`);
 		await sleep(5000);
 	}
 }

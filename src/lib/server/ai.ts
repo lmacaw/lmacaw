@@ -9,25 +9,28 @@ export async function retryItemAnalysis(sql: SQL, ownerId: string, itemId: strin
 	if (!rows.length) throw new Error('Failed job not found');
 }
 
+// Worker endpoints use single, self-contained statements instead of sql.begin(): they run every
+// few seconds, and a transaction left open on a pooled connection once held the worker_status row
+// lock until every pooled connection queued behind it (Bun 1.3.11, 2026-11-08).
+
 export async function claimJob(sql: SQL): Promise<Job | null> {
-	return sql.begin(async (tx) => {
-		await tx`INSERT INTO worker_status (id, last_seen) VALUES (true, now()) ON CONFLICT (id) DO UPDATE SET last_seen = excluded.last_seen`;
-		await tx`DELETE FROM ai_jobs WHERE kind = 'query' AND created_at < now() - interval '15 minutes'`;
-		await tx`UPDATE ai_jobs SET state = 'failed' WHERE state = 'leased' AND lease_until < now() AND attempts >= 5`;
-		const lease = randomUUID();
-		const rows = await tx`UPDATE ai_jobs SET state = 'leased', lease_token = ${lease}, lease_until = now() + interval '5 minutes', attempts = attempts + 1
-			WHERE id = (SELECT id FROM ai_jobs WHERE attempts < 5 AND (kind <> 'query' OR created_at > now() - interval '30 seconds') AND (state = 'pending' OR (state = 'leased' AND lease_until < now())) ORDER BY CASE WHEN kind = 'query' THEN 0 ELSE 1 END, created_at FOR UPDATE SKIP LOCKED LIMIT 1)
-			RETURNING id, kind, item_id, query`;
-		if (!rows.length) return null;
-		let text: string | null = null;
-		if (rows[0].kind === 'document') {
-			const documents = await tx`SELECT i.revision, concat_ws(' ', COALESCE(NULLIF(i.description, ''), a.description, ''), COALESCE(i.ocr_override, a.extracted_text, ''), array_to_string(CASE WHEN cardinality(i.tags) > 0 THEN i.tags ELSE COALESCE(a.suggested_tags, '{}') END, ' ')) AS text
-				FROM items i LEFT JOIN item_analysis a ON a.item_id = i.id WHERE i.id = ${rows[0].item_id}`;
-			await tx`UPDATE ai_jobs SET revision = ${documents[0].revision} WHERE id = ${rows[0].id}`;
-			text = String(documents[0].text).trim().slice(0, 8000);
-		}
-		return { id: rows[0].id, kind: rows[0].kind, itemId: rows[0].item_id, query: rows[0].query, text, leaseToken: lease };
-	});
+	await sql`INSERT INTO worker_status (id, last_seen) VALUES (true, now()) ON CONFLICT (id) DO UPDATE SET last_seen = excluded.last_seen`;
+	await sql`DELETE FROM ai_jobs WHERE kind = 'query' AND created_at < now() - interval '15 minutes'`;
+	await sql`UPDATE ai_jobs SET state = 'failed' WHERE state = 'leased' AND lease_until < now() AND attempts >= 5`;
+	const lease = randomUUID();
+	const rows = await sql`UPDATE ai_jobs SET state = 'leased', lease_token = ${lease}, lease_until = now() + interval '5 minutes', attempts = attempts + 1
+		WHERE id = (SELECT id FROM ai_jobs WHERE attempts < 5 AND (kind <> 'query' OR created_at > now() - interval '30 seconds') AND (state = 'pending' OR (state = 'leased' AND lease_until < now())) ORDER BY CASE WHEN kind = 'query' THEN 0 ELSE 1 END, created_at FOR UPDATE SKIP LOCKED LIMIT 1)
+		RETURNING id, kind, item_id, query`;
+	if (!rows.length) return null;
+	let text: string | null = null;
+	if (rows[0].kind === 'document') {
+		// Record the revision and read the text in one statement, so both come from the same snapshot.
+		const documents = await sql`UPDATE ai_jobs j SET revision = i.revision FROM items i LEFT JOIN item_analysis a ON a.item_id = i.id
+			WHERE j.id = ${rows[0].id} AND i.id = j.item_id
+			RETURNING concat_ws(' ', COALESCE(NULLIF(i.description, ''), a.description, ''), COALESCE(i.ocr_override, a.extracted_text, ''), array_to_string(CASE WHEN cardinality(i.tags) > 0 THEN i.tags ELSE COALESCE(a.suggested_tags, '{}') END, ' ')) AS text`;
+		text = String(documents[0]?.text ?? '').trim().slice(0, 8000);
+	}
+	return { id: rows[0].id, kind: rows[0].kind, itemId: rows[0].item_id, query: rows[0].query, text, leaseToken: lease };
 }
 
 /** Queue a fresh search representation for an item, replacing any older request not yet in progress. */
@@ -40,13 +43,15 @@ export async function enqueueDocument(sql: SQL, itemId: string): Promise<void> {
 export async function completeDocumentJob(sql: SQL, id: string, leaseToken: string, embedding: number[], model: string): Promise<void> {
 	const vector = vectorLiteral(embedding);
 	if (typeof model !== 'string' || !model || model.length > 100) throw new Error('Invalid model');
-	await sql.begin(async (tx) => {
-		const rows = await tx`UPDATE ai_jobs SET state = 'complete', lease_token = NULL, lease_until = NULL WHERE id = ${id} AND kind = 'document' AND state = 'leased' AND lease_token = ${leaseToken} AND lease_until > now() RETURNING item_id, revision`;
-		if (!rows.length) throw new Error('Invalid or expired lease');
-		await tx`INSERT INTO item_analysis (item_id, embedding, embedding_model)
-			SELECT id, ${vector}::text::vector, ${model} FROM items WHERE id = ${rows[0].item_id} AND revision = ${rows[0].revision}
-			ON CONFLICT (item_id) DO UPDATE SET embedding = excluded.embedding, embedding_model = excluded.embedding_model, updated_at = now()`;
-	});
+	const rows = await sql`WITH job AS (
+			UPDATE ai_jobs SET state = 'complete', lease_token = NULL, lease_until = NULL WHERE id = ${id} AND kind = 'document' AND state = 'leased' AND lease_token = ${leaseToken} AND lease_until > now() RETURNING item_id, revision
+		), saved AS (
+			INSERT INTO item_analysis (item_id, embedding, embedding_model)
+			SELECT i.id, ${vector}::text::vector, ${model} FROM job JOIN items i ON i.id = job.item_id AND i.revision = job.revision
+			ON CONFLICT (item_id) DO UPDATE SET embedding = excluded.embedding, embedding_model = excluded.embedding_model, updated_at = now()
+		)
+		SELECT item_id FROM job`;
+	if (!rows.length) throw new Error('Invalid or expired lease');
 }
 
 /** Queue document jobs for analysed items not embedded with `model` (every analysed item when null). */
@@ -57,11 +62,9 @@ export async function enqueueReindex(sql: SQL, model: string | null): Promise<nu
 }
 
 export async function renewLease(sql: SQL, id: string, token: string): Promise<boolean> {
-	return sql.begin(async (tx) => {
-		const rows = await tx`UPDATE ai_jobs SET lease_until = now() + interval '5 minutes' WHERE id = ${id} AND state = 'leased' AND lease_token = ${token} AND lease_until > now() RETURNING id`;
-		if (rows.length) await tx`INSERT INTO worker_status (id, last_seen) VALUES (true, now()) ON CONFLICT (id) DO UPDATE SET last_seen = excluded.last_seen`;
-		return rows.length > 0;
-	});
+	const rows = await sql`UPDATE ai_jobs SET lease_until = now() + interval '5 minutes' WHERE id = ${id} AND state = 'leased' AND lease_token = ${token} AND lease_until > now() RETURNING id`;
+	if (rows.length) await sql`INSERT INTO worker_status (id, last_seen) VALUES (true, now()) ON CONFLICT (id) DO UPDATE SET last_seen = excluded.last_seen`;
+	return rows.length > 0;
 }
 
 export async function failJob(sql: SQL, id: string, token: string): Promise<boolean> {
@@ -109,13 +112,15 @@ export async function requestSemanticMatches(sql: SQL, userId: string, shared: b
 export async function completeImageJob(sql: SQL, id: string, leaseToken: string, result: ImageResult): Promise<void> {
 	const embedding = vectorLiteral(result.embedding);
 	if (typeof result.description !== 'string' || result.description.length > 4000 || typeof result.extractedText !== 'string' || result.extractedText.length > 4000 || !Array.isArray(result.tags) || result.tags.length > 30 || result.tags.some((tag) => typeof tag !== 'string' || tag.length > 60) || typeof result.model !== 'string' || !result.model || result.model.length > 100) throw new Error('Invalid AI result');
-	await sql.begin(async (tx) => {
-		const rows = await tx`UPDATE ai_jobs SET state = 'complete', lease_token = NULL, lease_until = NULL WHERE id = ${id} AND kind = 'image' AND state = 'leased' AND lease_token = ${leaseToken} AND lease_until > now() RETURNING item_id`;
-		if (!rows.length) throw new Error('Invalid or expired lease');
-		await tx`INSERT INTO item_analysis (item_id, description, extracted_text, suggested_tags, embedding, embedding_model)
-			VALUES (${rows[0].item_id}, ${result.description}, ${result.extractedText}, ARRAY(SELECT jsonb_array_elements_text(${JSON.stringify(result.tags)}::text::jsonb)), ${embedding}::text::vector, ${result.model})
-			ON CONFLICT (item_id) DO UPDATE SET description = excluded.description, extracted_text = excluded.extracted_text, suggested_tags = excluded.suggested_tags, embedding = excluded.embedding, embedding_model = excluded.embedding_model, updated_at = now()`;
-		const edited = await tx`SELECT id FROM items WHERE id = ${rows[0].item_id} AND (description <> '' OR cardinality(tags) > 0 OR ocr_override IS NOT NULL)`;
-		if (edited.length) await enqueueDocument(tx as unknown as SQL, rows[0].item_id);
-	});
+	const rows = await sql`WITH job AS (
+			UPDATE ai_jobs SET state = 'complete', lease_token = NULL, lease_until = NULL WHERE id = ${id} AND kind = 'image' AND state = 'leased' AND lease_token = ${leaseToken} AND lease_until > now() RETURNING item_id
+		), saved AS (
+			INSERT INTO item_analysis (item_id, description, extracted_text, suggested_tags, embedding, embedding_model)
+			SELECT item_id, ${result.description}, ${result.extractedText}, ARRAY(SELECT jsonb_array_elements_text(${JSON.stringify(result.tags)}::text::jsonb)), ${embedding}::text::vector, ${result.model} FROM job
+			ON CONFLICT (item_id) DO UPDATE SET description = excluded.description, extracted_text = excluded.extracted_text, suggested_tags = excluded.suggested_tags, embedding = excluded.embedding, embedding_model = excluded.embedding_model, updated_at = now()
+		)
+		SELECT i.id, (i.description <> '' OR cardinality(i.tags) > 0 OR i.ocr_override IS NOT NULL) AS edited FROM job JOIN items i ON i.id = job.item_id`;
+	if (!rows.length) throw new Error('Invalid or expired lease');
+	// The owner's edits take precedence; re-embed them on top of the new analysis.
+	if (rows[0].edited) await enqueueDocument(sql, rows[0].id);
 }

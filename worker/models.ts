@@ -20,9 +20,15 @@ export function embedDocument(text: string, config: ModelConfig, fetcher: Fetche
 	return embed(`search_document: ${text}`.slice(0, 8000), config, fetcher);
 }
 
+const VISION_PROMPT = 'Describe this meme in one or two sentences, transcribe any visible text exactly, and give up to 8 distinct short tags. Return JSON with description, extracted_text, and tags.';
+// A schema with a tag limit, a token cap, and a repeat penalty stop small vision models from
+// looping on the tag list until the request times out (seen with qwen2.5vl:3b on real photos).
+const VISION_SCHEMA = { type: 'object', properties: { description: { type: 'string' }, extracted_text: { type: 'string' }, tags: { type: 'array', items: { type: 'string' }, maxItems: 8 } }, required: ['description', 'extracted_text', 'tags'] };
+const VISION_OPTIONS = { num_predict: 600, temperature: 0, repeat_penalty: 1.15 };
+
 export async function analyzeImage(bytes: Uint8Array, config: ModelConfig, fetcher: Fetcher = fetch) {
 	const image = await sharp(bytes, { page: 0, limitInputPixels: 40_000_000 }).rotate().resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true }).png().toBuffer();
-	const response = await fetcher(new URL('/api/generate', config.ollamaUrl), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: config.visionModel, prompt: 'Describe this meme and transcribe any visible text. Return JSON with description, extracted_text, and tags (an array of short strings).', images: [image.toString('base64')], stream: false, format: 'json' }), signal: AbortSignal.timeout(240_000) });
+	const response = await fetcher(new URL('/api/generate', config.ollamaUrl), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: config.visionModel, prompt: VISION_PROMPT, images: [image.toString('base64')], stream: false, format: VISION_SCHEMA, options: VISION_OPTIONS }), signal: AbortSignal.timeout(240_000) });
 	if (!response.ok) throw new Error('Vision request failed');
 	const body = await response.json() as { response?: string };
 	const result = JSON.parse(body.response ?? '{}') as Record<string, unknown>;

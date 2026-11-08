@@ -13,6 +13,9 @@ test('generates image metadata and uses a document embedding prefix', async () =
 	expect(result.description).toBe('A cat');
 	expect(result.tags).toEqual(['cat']);
 	expect(String(calls[1].body.input)).toStartWith('search_document: ');
+	const vision = calls[0].body as { format: { properties: { tags: { maxItems: number } } }; options: { num_predict: number } };
+	expect(vision.format.properties.tags.maxItems).toBe(8);
+	expect(vision.options.num_predict).toBeGreaterThan(0);
 	await embedQuery('mèo', { ollamaUrl: 'http://localhost:11434', visionModel: 'vision', embeddingModel: 'embed' }, fetcher);
 	expect(String(calls[2].body.input)).toBe('search_query: mèo');
 });

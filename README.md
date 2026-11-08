@@ -48,7 +48,17 @@ bun run reindex nomic-embed-text-v2-moe   # the new model name; omit it to re-em
 
 Until reindexing finishes, semantic search only matches items embedded with the worker's current model; keyword search still covers everything.
 
-The default models are starting points. Measured on 2026-11-08 on an Apple M3 Pro (36 GB) with Ollama and the default models: about 11 seconds per image for description, text extraction, and tags; about 2 seconds per uncached search query; an edited description was searchable about 3 seconds after saving. A small English/Vietnamese check found cross-language matches (for example, `con mèo ôm gấu bông` returned a cat-with-teddy-bear meme), but this is not a quality benchmark. NVIDIA hardware has not been tested. GIF analysis uses the first frame. Copying a GIF through the browser copies a still frame; download retains the original animation.
+The default models are starting points. Measured on 2026-11-08 on an Apple M3 Pro (36 GB) with Ollama and the default models:
+
+| Check | Result |
+| --- | --- |
+| Image analysis (description, text, tags) | about 4–5 s per photo (30 Openverse photos in under 2 minutes) |
+| Search query, uncached | about 2 s |
+| Edited description searchable | about 3 s after saving |
+| Recall@5, English queries (20) | 20/20 |
+| Recall@5, Vietnamese queries (20) | 17/20; missed `con mèo`, `con chó`, `cái ô` while `mèo con` and `chó con` matched |
+
+Reproduce against a disposable server, database, and running worker with `BENCH_URL`, `BENCH_EMAIL`, and `BENCH_PASSWORD` set: `bun run scripts/benchmark-search.ts`. It saves 3 Openverse images for each of 10 topics and scores 40 queries; results vary with Openverse content. Thirty photos is a small sample, not a quality guarantee. NVIDIA hardware has not been tested. GIF analysis uses the first frame. Copying a GIF through the browser copies a still frame; download retains the original animation.
 
 ## Discover
 

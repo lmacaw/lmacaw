@@ -22,6 +22,8 @@ Open the configured origin, sign in, and use **Invite** to create a single-use l
 
 PostgreSQL and image data use separate named volumes. Do not delete those volumes when upgrading. To use S3-compatible storage instead, set `MEDIA_STORAGE=s3` and configure the S3 variables shown in `.env.example`; create a private bucket before starting the application.
 
+Release tags publish a private image, `ghcr.io/phucnht/lmacaw:<version>` (also `:<major>.<minor>` and `:latest`), for amd64 and arm64 through `.github/workflows/publish.yml`. Hosts that pull it need `docker login ghcr.io` with a token that has `read:packages`.
+
 ## Optional AI worker
 
 Set a long, random `AI_WORKER_TOKEN` on the app and the worker. Install Bun and Ollama on the worker machine, then install the models and application dependencies:

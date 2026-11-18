@@ -34,3 +34,10 @@ export function trustedOrigin(request: Request, url: URL, origins = process.env.
 	if (!origin || origin === url.origin) return true;
 	return origins.split(',').includes(origin);
 }
+
+// With ADDRESS_HEADER set for a reverse proxy, adapter-node throws when a request arrives without
+// that header, as it does when a browser reaches the port directly on the LAN. Those requests
+// share one rate-limit bucket instead of failing with a 500.
+export function clientAddress(getClientAddress: () => string): string {
+	try { return getClientAddress(); } catch { return 'direct'; }
+}

@@ -282,6 +282,10 @@
 				<button class="button primary" type="submit" disabled={!ready}>Sign in</button>
 			</form>
 			{#if message}<p class="error" role="alert">{message}</p>{/if}
+			<details class="forgot">
+				<summary>Forgot password?</summary>
+				<p class="hint">Ask whoever runs this Lmacaw server to reset it. On the server: <code>EMAIL=… NEW_PASSWORD=… bun run reset-password</code>.</p>
+			</details>
 		</div>
 	</main>
 {:else}

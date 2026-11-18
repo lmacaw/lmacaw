@@ -45,3 +45,9 @@ test('accepts a sign-in from any ORIGIN address and sends a plain-http cookie th
 		delete process.env.LMACAW_ORIGINS;
 	}
 });
+
+test('signs in when the proxy address header is missing instead of failing', async () => {
+	const request = new Request('https://example.test/api/v1/session', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://example.test' }, body: JSON.stringify({ email, password: 'a long valid password' }) });
+	const event = { request, url: new URL(request.url), getClientAddress: () => { throw new Error('Address header was specified with ADDRESS_HEADER=x-forwarded-for but is absent from request'); }, cookies: { set: () => {} } };
+	expect((await POST(event as never)).status).toBe(204);
+});

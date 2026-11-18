@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { SQL } from 'bun';
-import { bootstrapAdmin, createInvitation, redeemInvitation, login, authenticate, logout } from '../src/lib/server/auth';
+import { bootstrapAdmin, createInvitation, redeemInvitation, login, authenticate, logout, resetPassword } from '../src/lib/server/auth';
 
 const testUrl = process.env.TEST_DATABASE_URL;
 if (!testUrl || !new URL(testUrl).pathname.endsWith('_test')) {
@@ -29,4 +29,15 @@ test('admin bootstrap, invitations, and sessions enforce ownership and expiry', 
 	await expect(redeemInvitation(sql, expired, 'expired@example.com', 'a long member password')).rejects.toThrow();
 	await logout(sql, session!);
 	expect(await authenticate(sql, session!)).toBeNull();
+});
+
+test('resetPassword replaces the password and ends existing sessions', async () => {
+	const before = await login(sql, 'member@example.com', 'a long member password');
+	expect(before).not.toBeNull();
+	expect(await resetPassword(sql, ' Member@Example.com ', 'a brand new password')).toBe(true);
+	expect(await authenticate(sql, before!)).toBeNull();
+	expect(await login(sql, 'member@example.com', 'a long member password')).toBeNull();
+	expect(await login(sql, 'member@example.com', 'a brand new password')).not.toBeNull();
+	expect(await resetPassword(sql, 'nobody@example.com', 'a brand new password')).toBe(false);
+	await expect(resetPassword(sql, 'member@example.com', 'short')).rejects.toThrow();
 });

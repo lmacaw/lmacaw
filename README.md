@@ -18,6 +18,14 @@ docker compose exec -e ADMIN_EMAIL -e ADMIN_PASSWORD app bun run bootstrap-admin
 unset ADMIN_EMAIL ADMIN_PASSWORD
 ```
 
+To reset a forgotten password, type the values at the prompts and run the reset command. It also signs that account out everywhere.
+
+```sh
+read -r EMAIL; read -rs NEW_PASSWORD; export EMAIL NEW_PASSWORD
+docker compose exec -e EMAIL -e NEW_PASSWORD app bun run reset-password
+unset EMAIL NEW_PASSWORD
+```
+
 Open the configured origin, sign in, and use **Invite** to create a single-use link for another member. Invitation links expire after seven days. Share the link through a channel you trust.
 
 PostgreSQL and image data use separate named volumes. Do not delete those volumes when upgrading. To use S3-compatible storage instead, set `MEDIA_STORAGE=s3` and configure the S3 variables shown in `.env.example`; create a private bucket before starting the application.

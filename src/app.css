@@ -64,6 +64,11 @@ textarea.input { resize: vertical; }
 .auth-card .input { height: 38px; }
 .auth-card .button { height: 38px; margin-top: 16px; }
 .auth-card .error { margin-top: 12px; }
+.forgot { margin-top: 16px; color: var(--muted); font-size: 13px; }
+.forgot summary { cursor: pointer; width: fit-content; }
+.forgot summary:hover { color: var(--text); }
+.forgot .hint { margin-top: 6px; line-height: 1.5; }
+.forgot code { font-size: 12px; overflow-wrap: anywhere; }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 640; font-size: 15px; letter-spacing: -.01em; }
 .brand-mark { display: block; width: 24px; height: 24px; border-radius: 6px; }
 

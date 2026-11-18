@@ -67,3 +67,14 @@ export async function authenticate(sql: SQL, value: string): Promise<User | null
 export async function logout(sql: SQL, value: string): Promise<void> {
 	await sql`DELETE FROM sessions WHERE token_hash = ${hashToken(value)}`;
 }
+
+// Sets a new password and signs the account out everywhere. Run by the operator from the server
+// (scripts/reset-password.ts); there is no mail delivery for self-service resets.
+export async function resetPassword(sql: SQL, address: string, password: string): Promise<boolean> {
+	const email = emailAddress(address);
+	const passwordHash = await hashPassword(password);
+	const rows = await sql`WITH account AS (UPDATE users SET password_hash = ${passwordHash} WHERE email = ${email} RETURNING id),
+		ended AS (DELETE FROM sessions WHERE user_id IN (SELECT id FROM account))
+		SELECT id FROM account`;
+	return rows.length > 0;
+}

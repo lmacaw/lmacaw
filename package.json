@@ -11,6 +11,7 @@
     "test:e2e": "playwright test",
     "migrate": "bun run scripts/migrate.ts",
     "bootstrap-admin": "bun run scripts/bootstrap-admin.ts",
+    "reset-password": "bun run scripts/reset-password.ts",
     "worker": "bun run worker/index.ts",
     "cleanup-media": "bun run scripts/cleanup-media.ts",
     "reindex": "bun run scripts/reindex.ts"

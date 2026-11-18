@@ -9,15 +9,18 @@
 <ul class="gallery" aria-label="Memes">
 	{#each items as item (item.id)}
 		{@const label = item.description || item.ai_description || 'Meme'}
+		{@const mediaRoute = `/api/v1/items/${item.id}/media`}
+		<!-- GIF tiles use the original so they stay animated. -->
+		{@const src = item.content_type === 'image/gif' ? mediaRoute : `${mediaRoute}?size=thumbnail`}
 		<li class="tile">
 			<button class="tile-open" data-meme-tile onclick={() => onopen(item)} aria-label={`Open ${label}`}>
-				<img src={`/api/v1/items/${item.id}/media?size=thumbnail`} alt="" loading="lazy" decoding="async" />
+				<img {src} alt="" loading="lazy" decoding="async" />
 			</button>
 			<div class="tile-actions">
 				{#if canCopy}
 					<button class="tile-action" aria-label="Copy meme" title="Copy" onclick={() => oncopy(item)}><Icon name="copy" size={16} /></button>
 				{:else}
-					<a class="tile-action" href={`/api/v1/items/${item.id}/media`} download aria-label="Download meme" title="Download"><Icon name="download" size={16} /></a>
+					<a class="tile-action" href={`${mediaRoute}?download=1`} download aria-label="Download meme" title="Download"><Icon name="download" size={16} /></a>
 				{/if}
 				{#if shared}
 					<button class="tile-action" aria-label="Save meme" title="Save to library" onclick={() => onsave(item)}><Icon name="bookmark" size={16} /></button>

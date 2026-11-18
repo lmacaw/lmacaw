@@ -5,6 +5,7 @@
 	import DetailDialog from '$lib/components/DetailDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import type { Collection, Discovery, Item, Scope } from '$lib/types';
+	import { fetchAndUpload, uploadFile } from '$lib/upload';
 
 	let { data } = $props();
 	const user = $derived(data.user);
@@ -98,9 +99,8 @@
 		const list = Array.from(files);
 		let added = 0, duplicates = 0, failed: string[] = [];
 		for (const file of list) {
-			const body = new FormData(); body.set('file', file);
 			try {
-				const response = await fetch('/api/v1/items', { method: 'POST', body });
+				const response = await uploadFile(file);
 				if (!response.ok) failed.push(file.name);
 				else if ((await response.json()).duplicate) duplicates++;
 				else added++;
@@ -195,8 +195,8 @@
 		finally { discovering = false; }
 	}
 	async function saveDiscovery(item: Discovery) {
-		const response = await api('/api/v1/discover/save', 'POST', { id: item.id });
-		notify(response.ok ? 'Saved to your library.' : 'Could not save image.');
+		const response = await fetchAndUpload({ openverse: item.id }).catch(() => null);
+		notify(response?.ok ? 'Saved to your library.' : 'Could not save image.');
 	}
 
 	function openForm(kind: 'url' | 'collection' | 'rename') {
@@ -214,7 +214,7 @@
 				const failed: string[] = []; let added = 0, duplicates = 0;
 				for (const [index, url] of urls.entries()) {
 					form.progress = `Importing ${index + 1} of ${urls.length}…`;
-					const attempt = () => api('/api/v1/import', 'POST', { url }).catch(() => null);
+					const attempt = () => fetchAndUpload({ url }).catch(() => null);
 					let response = await attempt();
 					if (!response?.ok) response = await attempt(); // one retry: remote hosts fail now and then
 					if (!response?.ok) { failed.push(url); continue; }
@@ -348,7 +348,7 @@
 			{/if}
 		</main>
 		{#if dragging}<div class="drop-overlay" aria-hidden="true">Drop to add</div>{/if}
-		{#if message && !current}<p class="toast" role="status">{message}{#if messageDownload} <a href={`/api/v1/items/${messageDownload.id}/media`} download>Download</a>{/if}</p>{/if}
+		{#if message && !current}<p class="toast" role="status">{message}{#if messageDownload} <a href={`/api/v1/items/${messageDownload.id}/media?download=1`} download>Download</a>{/if}</p>{/if}
 	</div>
 
 	<DetailDialog

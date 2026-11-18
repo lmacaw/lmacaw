@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
-import { expect, test } from 'vitest';
+import { describe, expect, test } from 'vitest';
 import { now, run } from '$lib/server/db';
-import { allowAttempt, clientAddress, readJson, trustedOrigin } from '$lib/server/request';
+import { allowAttempt, clientAddress, readJson, requireRole, trustedOrigin } from '$lib/server/request';
 
 test.each([
 	[undefined, true],
@@ -38,4 +38,30 @@ test('limits each key to ten attempts and resets expired windows', async () => {
 	const expiredKey = crypto.randomUUID();
 	await run(env.DB, 'INSERT INTO rate_limits (key, attempts, window_start) VALUES (?, ?, ?)', expiredKey, 11, now() - 61_000);
 	expect(await allowAttempt(env.DB, expiredKey)).toBe(true);
+});
+
+describe('requireRole', () => {
+	const admin = { id: 'a', email: 'a@example.com', isAdmin: true };
+	const member = { id: 'm', email: 'm@example.com', isAdmin: false };
+	const call = (user: typeof admin | null, role: 'anon' | 'member' | 'admin', mode?: string) =>
+		requireRole({ locals: { user } }, role, { AUTH_MODE: mode });
+	const status = (result: unknown) => (result instanceof Response ? result.status : 'ok');
+
+	test.each([
+		// mode, role, caller → result
+		['public', 'anon', null, 'ok'], ['public', 'anon', admin, 'ok'],
+		['public', 'member', null, 403], ['public', 'member', member, 403], ['public', 'member', admin, 'ok'],
+		['public', 'admin', null, 403], ['public', 'admin', admin, 'ok'],
+		['password', 'anon', null, 401], ['password', 'anon', member, 'ok'],
+		['password', 'member', null, 401], ['password', 'member', member, 'ok'],
+		['password', 'admin', member, 403], ['password', 'admin', admin, 'ok'],
+		[undefined, 'member', null, 401]
+	] as const)('%s mode, %s route, caller %o → %s', (mode, role, user, expected) => {
+		expect(status(call(user, role, mode))).toBe(expected);
+	});
+
+	test('returns the caller, or null for an anonymous public caller', () => {
+		expect(call(admin, 'admin', 'public')).toBe(admin);
+		expect(call(null, 'anon', 'public')).toBeNull();
+	});
 });

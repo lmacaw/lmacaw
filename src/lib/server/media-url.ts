@@ -5,7 +5,7 @@ import { validateKey } from './storage';
 export async function mediaUrl(
 	env: Env,
 	key: string,
-	contentType: string,
+	contentType?: string,
 	filename?: string
 ): Promise<string | null> {
 	validateKey(key);
@@ -14,7 +14,7 @@ export async function mediaUrl(
 
 	const url = new URL(`https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${R2_BUCKET}/${key}`);
 	url.searchParams.set('X-Amz-Expires', '600');
-	url.searchParams.set('response-content-type', contentType);
+	if (contentType) url.searchParams.set('response-content-type', contentType);
 	if (filename !== undefined) {
 		const safeFilename = filename.replace(/["\\\x00-\x1f\x7f]/g, '');
 		url.searchParams.set('response-content-disposition', `attachment; filename="${safeFilename}"`);

@@ -1,0 +1,25 @@
+{
+  "name": "lmacaw",
+  "main": "cloudflare/entry.ts",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "binding": "ASSETS",
+    "directory": ".svelte-kit/cloudflare"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "lmacaw",
+      "database_id": "local-placeholder",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "lmacaw-media" }],
+  "ai": { "binding": "AI" },
+  "vectorize": [{ "binding": "VECTORIZE", "index_name": "lmacaw-items" }],
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": {
+    "ORIGIN": "http://localhost:4173",
+    "MAIL_FROM": "Lmacaw <hello@lmacaw.meme>"
+  }
+}

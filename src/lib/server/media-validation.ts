@@ -7,22 +7,3 @@ export function sniffImageType(data: Uint8Array): string | null {
 	if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'image/webp';
 	return null;
 }
-import sharp from 'sharp';
-
-
-export async function validateImage(data: Uint8Array): Promise<{ contentType: string; width: number; height: number }> {
-	if (data.byteLength === 0 || data.byteLength > 20 * 1024 * 1024) throw new Error('Image exceeds the size limit');
-	const contentType = sniffImageType(data);
-	if (!contentType) throw new Error('Unsupported image format');
-	try {
-		const image = sharp(data, { limitInputPixels: 40_000_000, animated: true, failOn: 'warning' });
-		const metadata = await image.metadata();
-		if (!metadata.width || !metadata.height) throw new Error('Image dimensions missing');
-		await image.clone().resize(1, 1).png().toBuffer();
-		const height = metadata.pageHeight ?? metadata.height;
-		const rotated = (metadata.orientation ?? 1) >= 5;
-		return { contentType, width: rotated ? height : metadata.width, height: rotated ? metadata.width : height };
-	} catch {
-		throw new Error('Invalid or unsupported image');
-	}
-}

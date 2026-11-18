@@ -12,22 +12,6 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    services:
-      postgres:
-        image: pgvector/pgvector:pg17
-        env:
-          POSTGRES_USER: lmacaw
-          POSTGRES_PASSWORD: lmacaw
-          POSTGRES_DB: lmacaw_test
-        ports: ["5432:5432"]
-        options: --health-cmd "pg_isready -U lmacaw -d lmacaw_test" --health-interval 5s --health-timeout 5s --health-retries 10
-      s3:
-        image: adobe/s3mock:latest
-        ports: ["9090:9090"]
-    env:
-      DATABASE_URL: postgresql://lmacaw:lmacaw@127.0.0.1:5432/lmacaw_test
-      TEST_DATABASE_URL: postgresql://lmacaw:lmacaw@127.0.0.1:5432/lmacaw_test
-      TEST_S3_ENDPOINT: http://127.0.0.1:9090
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -36,5 +20,4 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun run build
-      - run: bun run migrate
       - run: bun run test

@@ -78,7 +78,7 @@
 		event.preventDefault(); message = '';
 		try {
 			const response = await api('/api/v1/session', 'POST', { email, password });
-			if (!response.ok) { message = response.status === 429 ? 'Too many attempts. Try again later.' : 'Unable to sign in.'; return; }
+			if (!response.ok) { message = response.status === 429 ? 'Too many attempts. Try again later.' : response.status === 403 ? 'Sign-in is not allowed from this address. Open Lmacaw at its main address, or add this one to ALLOWED_ORIGINS.' : 'Unable to sign in.'; return; }
 			password = ''; window.location.assign('/');
 		} catch { message = 'Unable to connect.'; }
 	}

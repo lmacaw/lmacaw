@@ -1,5 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import { trustedOrigin } from '../../../../lib/server/request';
 import { db } from '../../../../lib/server/db';
 import { createItem } from '../../../../lib/server/library';
 import { storageFromEnv } from '../../../../lib/server/storage';
@@ -39,8 +40,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 
 export const POST: RequestHandler = async ({ locals, request, url }) => {
 	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
-	const origin = request.headers.get('origin');
-	if (origin && origin !== url.origin) return json({ error: 'Forbidden' }, { status: 403 });
+	if (!trustedOrigin(request, url)) return json({ error: 'Forbidden' }, { status: 403 });
 	const reader = request.body?.getReader();
 	if (!reader) return json({ error: 'File required' }, { status: 400 });
 	const parts: Uint8Array[] = [];

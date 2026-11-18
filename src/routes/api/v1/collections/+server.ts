@@ -1,21 +1,26 @@
 import { json } from '@sveltejs/kit';
 import { createCollection, isCollectionName, isCollectionNameConflict, isUuid, listCollections } from '$lib/server/collections';
 import { getEnv } from '$lib/server/env';
-import { readJson, trustedOrigin } from '$lib/server/request';
+import { readJson, requireRole, trustedOrigin } from '$lib/server/request';
 import type { RequestHandler } from './$types';
 
-export const GET: RequestHandler = async ({ locals, url, platform }) => {
-	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
+export const GET: RequestHandler = async (event) => {
+	const { url, platform } = event;
+	const env = getEnv(platform);
+	const caller = requireRole(event, 'member', env);
+	if (caller instanceof Response) return caller;
 	const item = url.searchParams.get('item');
 	if (item && !isUuid(item)) return json({ error: 'Invalid item' }, { status: 400 });
-	const collections = await listCollections(getEnv(platform).DB, locals.user.id, item?.toLowerCase());
+	const collections = await listCollections(env.DB, caller!.id, item?.toLowerCase());
 	return json({ collections }, { headers: { 'cache-control': 'private, no-store' } });
 };
 
-export const POST: RequestHandler = async ({ locals, request, url, platform }) => {
+export const POST: RequestHandler = async (event) => {
+	const { request, url, platform } = event;
 	const env = getEnv(platform);
 	if (!trustedOrigin(request, url, env.ORIGIN)) return json({ error: 'Forbidden' }, { status: 403 });
-	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
+	const caller = requireRole(event, 'member', env);
+	if (caller instanceof Response) return caller;
 
 	let body: unknown;
 	try {
@@ -28,7 +33,7 @@ export const POST: RequestHandler = async ({ locals, request, url, platform }) =
 	}
 
 	try {
-		const collection = await createCollection(env.DB, locals.user.id, body.name);
+		const collection = await createCollection(env.DB, caller!.id, body.name);
 		return json({ collection }, { status: 201 });
 	} catch (error) {
 		if (isCollectionNameConflict(error)) return json({ error: 'Name already used' }, { status: 409 });

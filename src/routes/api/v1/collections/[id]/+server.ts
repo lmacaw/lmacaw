@@ -1,13 +1,15 @@
 import { json } from '@sveltejs/kit';
 import { deleteCollection, isCollectionName, isCollectionNameConflict, isUuid, renameCollection } from '$lib/server/collections';
 import { getEnv } from '$lib/server/env';
-import { readJson, trustedOrigin } from '$lib/server/request';
+import { readJson, requireRole, trustedOrigin } from '$lib/server/request';
 import type { RequestHandler } from './$types';
 
-export const PATCH: RequestHandler = async ({ locals, request, url, params, platform }) => {
+export const PATCH: RequestHandler = async (event) => {
+	const { request, url, params, platform } = event;
 	const env = getEnv(platform);
 	if (!trustedOrigin(request, url, env.ORIGIN)) return json({ error: 'Forbidden' }, { status: 403 });
-	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
+	const caller = requireRole(event, 'member', env);
+	if (caller instanceof Response) return caller;
 	if (!isUuid(params.id)) return json({ error: 'Invalid request' }, { status: 400 });
 
 	let body: unknown;
@@ -21,7 +23,7 @@ export const PATCH: RequestHandler = async ({ locals, request, url, params, plat
 	}
 
 	try {
-		await renameCollection(env.DB, locals.user.id, params.id.toLowerCase(), body.name);
+		await renameCollection(env.DB, caller!.id, params.id.toLowerCase(), body.name);
 		return new Response(null, { status: 204 });
 	} catch (error) {
 		if (error instanceof Error && error.message === 'Collection not found') return new Response(null, { status: 404 });
@@ -30,14 +32,16 @@ export const PATCH: RequestHandler = async ({ locals, request, url, params, plat
 	}
 };
 
-export const DELETE: RequestHandler = async ({ locals, request, url, params, platform }) => {
+export const DELETE: RequestHandler = async (event) => {
+	const { request, url, params, platform } = event;
 	const env = getEnv(platform);
 	if (!trustedOrigin(request, url, env.ORIGIN)) return json({ error: 'Forbidden' }, { status: 403 });
-	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
+	const caller = requireRole(event, 'member', env);
+	if (caller instanceof Response) return caller;
 	if (!isUuid(params.id)) return json({ error: 'Invalid request' }, { status: 400 });
 
 	try {
-		await deleteCollection(env.DB, locals.user.id, params.id.toLowerCase());
+		await deleteCollection(env.DB, caller!.id, params.id.toLowerCase());
 		return new Response(null, { status: 204 });
 	} catch (error) {
 		if (error instanceof Error && error.message === 'Collection not found') return new Response(null, { status: 404 });

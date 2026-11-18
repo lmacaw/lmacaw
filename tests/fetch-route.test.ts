@@ -1,16 +1,15 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import { GET } from '../src/routes/api/v1/fetch/+server';
+import { eventFor as routeEvent } from './fixtures';
 
 const imageUrl = 'https://images.example/cat.png';
 const imageId = '67e55044-10b1-426f-9247-bb680e5fe0c8';
 const png = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3);
 
 function eventFor(params: Record<string, string>, signedIn = true) {
-	const url = new URL('https://app.example/api/v1/fetch');
-	url.search = new URLSearchParams(params).toString();
-	return {
-		url, locals: { user: signedIn ? { id: 'user', email: 'user@example.com', isAdmin: false } : null }
-	} as Parameters<typeof GET>[0];
+	const route = '/api/v1/fetch';
+	const actor = signedIn ? { id: 'user', email: 'user@example.com', isAdmin: false } : null;
+	return routeEvent(route, `${route}?${new URLSearchParams(params)}`, actor);
 }
 
 afterEach(() => vi.unstubAllGlobals());

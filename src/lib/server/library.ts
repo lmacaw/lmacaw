@@ -18,6 +18,7 @@ export type NewItem = {
 	height: number;
 	source?: SourceMetadata | null;
 	initial?: InitialFields;
+	shared?: boolean;
 };
 
 type ItemRecord = {
@@ -76,7 +77,7 @@ function mapRow(row: ItemRecord): ItemRow {
 	};
 }
 
-function mapDto(userId: string, row: ItemWithAnalysis): ItemDto {
+function mapDto(userId: string | null, row: ItemWithAnalysis): ItemDto {
 	return {
 		id: row.id,
 		content_type: row.content_type,
@@ -105,17 +106,17 @@ export async function getItemDto(env: Env, userId: string, id: string): Promise<
 	return row && mapDto(userId, row);
 }
 
-export async function getVisibleItem(db: D1Database, userId: string, id: string): Promise<ItemRow | null> {
+export async function getVisibleItem(db: D1Database, userId: string | null, id: string): Promise<ItemRow | null> {
 	const row = await one<ItemRecord>(db, 'SELECT * FROM items WHERE id = ? AND (owner_id = ? OR shared = 1)', id, userId);
 	return row && mapRow(row);
 }
 
-export async function listItems(env: Env, user: User, { scope, collection, query = '', page = 1 }: ListOptions):
+export async function listItems(env: Env, user: User | null, { scope, collection, query = '', page = 1 }: ListOptions):
 	Promise<{ items: ItemDto[]; hasMore: boolean }> {
 	const filters: string[] = [];
 	const params: (string | number)[] = [];
 
-	if (scope === 'shared') {
+	if (user === null || scope === 'shared') {
 		filters.push('i.shared = 1');
 	} else {
 		filters.push('i.owner_id = ?');
@@ -141,7 +142,7 @@ export async function listItems(env: Env, user: User, { scope, collection, query
 		${itemWithAnalysis} ${searchJoin}
 		WHERE ${filters.join(' AND ')} ORDER BY i.created_at DESC, i.id DESC LIMIT ? OFFSET ?
 	`, ...params, pageSize + 1, (page - 1) * pageSize);
-	const items = rows.slice(0, pageSize).map((row) => mapDto(user.id, row));
+	const items = rows.slice(0, pageSize).map((row) => mapDto(user?.id ?? null, row));
 	return { items, hasMore: rows.length > pageSize };
 }
 
@@ -228,6 +229,7 @@ async function storeItem(
 	image: NewRecord,
 	source: SourceMetadata | null,
 	initial: InitialFields,
+	shared: boolean,
 	hasThumbnail: boolean,
 	write: (key: string, thumbnailKey: string | null) => Promise<void>
 ): Promise<CreateResult> {
@@ -251,10 +253,10 @@ async function storeItem(
 		const [inserted] = await db.batch<ItemRecord>([
 			db.prepare(`
 				INSERT INTO items (id, owner_id, content_hash, storage_key, thumbnail_key,
-					content_type, width, height, description, tags, ocr_override, source_metadata, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *
+					content_type, width, height, shared, description, tags, ocr_override, source_metadata, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *
 			`).bind(id, ownerId, image.content_hash, key, thumbnailKey, image.content_type,
-				image.width, image.height, initial.description, JSON.stringify(initial.tags), initial.extractedText,
+				image.width, image.height, Number(shared), initial.description, JSON.stringify(initial.tags), initial.extractedText,
 				source ? JSON.stringify(source) : null, now()),
 			enqueueImageStatement(db, id, ownerId),
 			...indexItem(db, id)
@@ -274,7 +276,7 @@ async function storeItem(
 }
 
 export async function createItem(env: Env, ownerId: string, input: NewItem): Promise<CreateResult> {
-	const { original, thumbnail, sha256, width, height, source = null, initial = emptyFields } = input;
+	const { original, thumbnail, sha256, width, height, source = null, initial = emptyFields, shared = false } = input;
 	if (original.size > originalLimit) throw new InvalidItemError('File too large');
 	if (!/^[a-f0-9]{64}$/.test(sha256)) throw new InvalidItemError('Invalid hash');
 	if (![width, height].every((value) => Number.isInteger(value) && value >= 1 && value <= 20_000)) {
@@ -297,7 +299,7 @@ export async function createItem(env: Env, ownerId: string, input: NewItem): Pro
 	if (!fits) throw new InvalidItemError('Invalid thumbnail');
 
 	return storeItem(env, ownerId, { content_hash: sha256, content_type: contentType, width, height },
-		source, initial, true, async (key, thumbnailKey) => {
+		source, initial, shared, true, async (key, thumbnailKey) => {
 			await putObject(env.MEDIA, key, original.stream(), contentType, original.size);
 			await putObject(env.MEDIA, thumbnailKey!, thumbnail.stream(), thumbnailType, thumbnail.size);
 		});
@@ -347,7 +349,7 @@ export async function saveSharedCopy(env: Env, userId: string, itemId: string): 
 		tags: tags.length ? tags : JSON.parse(row.suggested_tags ?? '[]') as string[],
 		extractedText: row.extracted_text
 	};
-	return storeItem(env, userId, row, source.sourceMetadata, initial, source.thumbnailKey !== null, async (key, thumbnailKey) => {
+	return storeItem(env, userId, row, source.sourceMetadata, initial, false, source.thumbnailKey !== null, async (key, thumbnailKey) => {
 		await copyObject(env.MEDIA, source.storageKey, key);
 		if (source.thumbnailKey && thumbnailKey) await copyObject(env.MEDIA, source.thumbnailKey, thumbnailKey);
 	});

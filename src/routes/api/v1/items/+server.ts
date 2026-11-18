@@ -1,15 +1,19 @@
 import { json } from '@sveltejs/kit';
-import { getEnv } from '$lib/server/env';
+import { authMode, getEnv } from '$lib/server/env';
 import { createItem, getItemDto, InvalidItemError, listItems, validItemId, type SourceMetadata } from '$lib/server/library';
 import { getOpenverseImage } from '$lib/server/openverse';
-import { trustedOrigin } from '$lib/server/request';
+import { requireRole, trustedOrigin } from '$lib/server/request';
 import type { RequestHandler } from './$types';
 
 const bodyLimit = 21 * 1024 * 1024 + 300 * 1024;
 const privateHeaders = { 'cache-control': 'private, no-store' };
 
-export const GET: RequestHandler = async ({ locals, url, platform }) => {
-	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
+export const GET: RequestHandler = async (event) => {
+	const { url, platform } = event;
+	const env = getEnv(platform);
+	const scope = url.searchParams.get('scope');
+	const caller = requireRole(event, scope === 'shared' ? 'anon' : 'member', env);
+	if (caller instanceof Response) return caller;
 
 	const page = Number(url.searchParams.get('page') ?? 1);
 	if (!Number.isInteger(page) || page < 1 || page > 10_000) {
@@ -18,8 +22,8 @@ export const GET: RequestHandler = async ({ locals, url, platform }) => {
 	const collection = url.searchParams.get('collection');
 	if (collection !== null && !validItemId(collection)) return json({ error: 'Invalid collection' }, { status: 400 });
 
-	const result = await listItems(getEnv(platform), locals.user, {
-		scope: url.searchParams.get('scope'),
+	const result = await listItems(env, caller, {
+		scope,
 		collection: collection?.toLowerCase(),
 		query: (url.searchParams.get('q') ?? '').trim().slice(0, 200),
 		page
@@ -27,10 +31,12 @@ export const GET: RequestHandler = async ({ locals, url, platform }) => {
 	return json({ ...result, semanticAvailable: false }, { headers: privateHeaders });
 };
 
-export const POST: RequestHandler = async ({ locals, request, url, platform }) => {
-	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
+export const POST: RequestHandler = async (event) => {
+	const { request, url, platform } = event;
 	const env = getEnv(platform);
 	if (!trustedOrigin(request, url, env.ORIGIN)) return json({ error: 'Forbidden' }, { status: 403 });
+	const caller = requireRole(event, 'member', env);
+	if (caller instanceof Response) return caller;
 
 	const length = request.headers.get('content-length');
 	if (length === null) return json({ error: 'Length required' }, { status: 411 });
@@ -74,10 +80,11 @@ export const POST: RequestHandler = async ({ locals, request, url, platform }) =
 	}
 
 	try {
-		const { item, duplicate } = await createItem(env, locals.user.id, {
-			original, thumbnail, sha256, width: Number(width), height: Number(height), source
+		const { item, duplicate } = await createItem(env, caller!.id, {
+			original, thumbnail, sha256, width: Number(width), height: Number(height), source,
+			shared: authMode(env) === 'public'
 		});
-		const dto = await getItemDto(env, locals.user.id, item.id);
+		const dto = await getItemDto(env, caller!.id, item.id);
 		if (!dto) return new Response(null, { status: 404 });
 		return json({ item: dto, duplicate }, {
 			status: duplicate ? 200 : 201, headers: privateHeaders

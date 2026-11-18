@@ -31,8 +31,8 @@ test('rejects a cross-origin login request', async () => {
 	expect(response.status).toBe(403);
 });
 
-test('accepts a sign-in from an ALLOWED_ORIGINS address and sends a plain-http cookie there', async () => {
-	process.env.ALLOWED_ORIGINS = 'http://192.168.1.10:47321/, https://lmacaw.lan.example';
+test('accepts a sign-in from any ORIGIN address and sends a plain-http cookie there', async () => {
+	process.env.LMACAW_ORIGINS = 'https://example.test,http://192.168.1.10:47321';
 	try {
 		let cookie: { options: Record<string, unknown> } | undefined;
 		const request = new Request('https://example.test/api/v1/session', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://192.168.1.10:47321' }, body: JSON.stringify({ email, password: 'a long valid password' }) });
@@ -42,6 +42,6 @@ test('accepts a sign-in from an ALLOWED_ORIGINS address and sends a plain-http c
 		const other = new Request('https://example.test/api/v1/session', { method: 'POST', headers: { origin: 'http://192.168.1.11:47321' } });
 		expect((await POST({ request: other, url: new URL(other.url) } as never)).status).toBe(403);
 	} finally {
-		delete process.env.ALLOWED_ORIGINS;
+		delete process.env.LMACAW_ORIGINS;
 	}
 });

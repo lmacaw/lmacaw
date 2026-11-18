@@ -4,7 +4,7 @@ Lmacaw is a self-hosted library for collecting, finding, and sharing images and 
 
 ## Self-host with Docker
 
-Copy `.env.example` to `.env`. Set `POSTGRES_PASSWORD` to a long random alphanumeric value and set `ORIGIN` to the exact browser-facing origin. To also reach the app at other addresses, such as a LAN IP next to a public domain, list them comma-separated in `ALLOWED_ORIGINS` (for example `http://192.168.1.20:3000,https://lmacaw.lan`). The session cookie is `Secure` on HTTPS addresses only. The default Compose file listens on `127.0.0.1:3000`. Use a trusted HTTPS reverse proxy for remote access.
+Copy `.env.example` to `.env`. Set `POSTGRES_PASSWORD` to a long random alphanumeric value and set `ORIGIN` to the exact browser-facing origin. To also reach the app at other addresses, such as a LAN IP next to a public domain, list them comma-separated in `ORIGIN`; the first is the main address (for example `ORIGIN=https://lmacaw.example.com,http://192.168.1.20:3000`). The session cookie is `Secure` on HTTPS addresses only. The default Compose file listens on `127.0.0.1:3000`. Use a trusted HTTPS reverse proxy for remote access.
 
 ```sh
 docker compose up --build -d

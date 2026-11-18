@@ -1,12 +1,11 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import { GET } from '../src/routes/api/v1/discover/+server';
+import { eventFor as routeEvent } from './fixtures';
 
 function eventFor(params: Record<string, string> = {}, signedIn = true) {
-	const url = new URL('https://app.example/api/v1/discover');
-	url.search = new URLSearchParams(params).toString();
-	return {
-		url, locals: { user: signedIn ? { id: 'user', email: 'user@example.com', isAdmin: false } : null }
-	} as Parameters<typeof GET>[0];
+	const route = '/api/v1/discover';
+	const actor = signedIn ? { id: 'user', email: 'user@example.com', isAdmin: false } : null;
+	return routeEvent(route, `${route}?${new URLSearchParams(params)}`, actor);
 }
 
 afterEach(() => vi.unstubAllGlobals());

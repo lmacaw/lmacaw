@@ -1,3 +1,4 @@
+ORIGIN=http://localhost:4173
 AI_MODE=fake
 DEV_ENDPOINTS=on
 ADMIN_EMAIL=admin@example.com

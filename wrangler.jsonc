@@ -10,16 +10,18 @@
     {
       "binding": "DB",
       "database_name": "lmacaw",
-      "database_id": "local-placeholder",
+      "database_id": "d7bc541f-b3ce-4ca7-9a5a-09e3644c9446",
       "migrations_dir": "migrations"
     }
   ],
   "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "lmacaw-media" }],
   "ai": { "binding": "AI" },
   "vectorize": [{ "binding": "VECTORIZE", "index_name": "lmacaw-items" }],
+  "routes": [{ "pattern": "lmacaw.meme", "custom_domain": true }],
   "triggers": { "crons": ["* * * * *"] },
   "vars": {
-    "ORIGIN": "http://localhost:4173",
+    "ORIGIN": "https://lmacaw.meme",
+    "R2_BUCKET": "lmacaw-media",
     "MAIL_FROM": "Lmacaw <hello@lmacaw.meme>"
   }
 }

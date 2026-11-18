@@ -55,21 +55,31 @@ h1, h2, h3, p { margin: 0; }
 textarea.input { resize: vertical; }
 .field-label { display: block; color: var(--muted); font-size: 12px; font-weight: 520; }
 
-/* Sign in */
-.auth-shell { min-height: 100dvh; display: grid; place-items: center; padding: 24px; }
+/* Account pages and about */
+.auth-shell { display: grid; place-items: center; padding: 24px; }
 .auth-card { width: min(100%, 320px); }
 .auth-card h1 { margin: 36px 0 18px; font-size: 22px; font-weight: 640; letter-spacing: -.02em; }
 .auth-card form { display: grid; gap: 6px; }
 .auth-card .field-label { margin-top: 8px; }
 .auth-card .input { height: 38px; }
 .auth-card .button { height: 38px; margin-top: 16px; }
+.auth-secondary { justify-self: center; margin-top: 6px; }
+.auth-secondary:disabled { opacity: .5; cursor: default; }
 .auth-card .error, .auth-card .notice { margin-top: 12px; }
+.about-card p + p { margin-top: 12px; }
+.about-card p a { text-decoration: underline; text-underline-offset: 2px; }
 .notice { font-size: 13px; line-height: 1.5; }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 640; font-size: 15px; letter-spacing: -.01em; }
 .brand-mark { display: block; width: 24px; height: 24px; border-radius: 6px; }
 
 /* Shell */
-.app-shell { min-height: 100dvh; display: grid; grid-template-columns: 236px minmax(0, 1fr); }
+.site-shell { min-height: 100dvh; display: flex; flex-direction: column; }
+.site-shell > .app-shell, .site-shell > .auth-shell { flex: 1; }
+.site-footer { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 16px; padding: 10px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
+.site-footer a { display: inline-flex; align-items: center; min-height: 24px; text-decoration: underline; text-underline-offset: 2px; }
+.site-footer a:hover { color: var(--text); }
+.app-shell { display: grid; grid-template-columns: 236px minmax(0, 1fr); }
+.app-shell.public-library { display: block; }
 .sidebar { position: sticky; top: 0; height: 100dvh; display: flex; flex-direction: column; gap: 18px; padding: 16px 10px 12px; overflow-y: auto; background: var(--surface); border-right: 1px solid var(--line); }
 .sidebar .brand { padding: 2px 8px; }
 .sidebar nav { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1px; }
@@ -161,6 +171,9 @@ dialog::backdrop { background: var(--scrim); }
 	.sidebar { position: fixed; inset: 0 auto 0 0; z-index: 50; width: min(280px, 84vw); visibility: hidden; transform: translateX(-100%); transition: transform .2s ease, visibility .2s; box-shadow: var(--shadow); }
 	.sidebar.open { visibility: visible; transform: none; transition: transform .2s ease; } /* visible at once, so focus can move in */
 	.scrim { display: block; position: fixed; inset: 0; z-index: 45; border: 0; background: var(--scrim); }
+	@supports selector(:has(.scrim)) {
+		.site-shell:has(.scrim) > .site-footer { visibility: hidden; }
+	}
 	.menu-button, .show-small { display: inline-grid; }
 	.hide-small { display: none; }
 	.topbar { gap: 4px; padding: 0 8px; }
@@ -181,6 +194,7 @@ dialog::backdrop { background: var(--scrim); }
 	.icon-button, .icon-button.small { width: 44px; height: 44px; }
 	.tile-action { min-width: 44px; height: 44px; }
 	.text-button { display: inline-flex; align-items: center; min-width: 44px; justify-content: center; }
+	.site-footer a { min-height: 44px; }
 	.check input { width: 20px; height: 20px; }
 	.search { height: 44px; }
 	.topbar { height: 56px; }

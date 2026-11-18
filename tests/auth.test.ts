@@ -1,28 +1,28 @@
 import { env } from 'cloudflare:test';
 import { expect, test, vi } from 'vitest';
-import { authenticate, createInvitation, createLoginLink, normalizeEmail, redeemLoginLink } from '$lib/server/auth';
+import {
+	authenticate, createInvitation, createLoginLink, normalizeEmail, redeemLoginLink, upsertAccessAdmin
+} from '$lib/server/auth';
 import { many, now, one, run } from '$lib/server/db';
 
 const db = env.DB;
 const address = () => `${crypto.randomUUID()}@example.com`;
 
 async function adminLink(email: string): Promise<string> {
-	const token = await createLoginLink(db, email, null, email);
+	await upsertAccessAdmin(db, email);
+	const token = await createLoginLink(db, email, null);
 	if (!token) throw new Error('Expected an administrator link');
 	return token;
 }
 
 async function memberLink(email: string, invitation: string): Promise<string> {
-	const token = await createLoginLink(db, email, invitation, undefined);
+	const token = await createLoginLink(db, email, invitation);
 	if (!token) throw new Error('Expected an invitation link');
 	return token;
 }
 
 async function invitationForTest(): Promise<string> {
-	const email = address();
-	const session = await redeemLoginLink(db, await adminLink(email), email);
-	const admin = session && await authenticate(db, session);
-	if (!admin) throw new Error('Expected an administrator session');
+	const admin = await upsertAccessAdmin(db, address());
 	return createInvitation(db, admin.id);
 }
 
@@ -31,8 +31,10 @@ test('normalizes email and rejects invalid addresses', () => {
 	expect(() => normalizeEmail('not-an-email')).toThrow('Invalid email');
 });
 
-test('returns no link for an unknown email', async () => {
-	await expect(createLoginLink(db, address(), null, undefined)).resolves.toBeNull();
+test('returns no link for an unknown email even when it matches ADMIN_EMAIL', async () => {
+	const email = address();
+	await expect(createLoginLink(db, email, null)).resolves.toBeNull();
+	await expect(createLoginLink(db, email, null, email.toUpperCase())).resolves.toBeNull();
 });
 
 test('stores a SHA-256 digest of a 43-character administrator link', async () => {
@@ -44,27 +46,27 @@ test('stores a SHA-256 digest of a 43-character administrator link', async () =>
 	expect(row?.token_hash).not.toBe(token);
 });
 
-test('creates an administrator and authenticates their session', async () => {
+test('authenticates an existing administrator via email without an ADMIN_EMAIL binding', async () => {
 	const email = address();
-	const adminEmail = email.toUpperCase();
-	const token = await createLoginLink(db, email, null, adminEmail);
-	expect(token).toBeTruthy();
-	const session = await redeemLoginLink(db, token!, adminEmail);
+	const token = await adminLink(email);
+	const session = await redeemLoginLink(db, token);
 	expect(session).toMatch(/^[A-Za-z0-9_-]{43}$/);
 	await expect(authenticate(db, session!)).resolves.toMatchObject({ email, isAdmin: true });
+});
 
-	const nextLink = await createLoginLink(db, email, null, undefined);
-	expect(nextLink).toBeTruthy();
-	const nextSession = await redeemLoginLink(db, nextLink!);
-	expect(nextSession).toBeTruthy();
-	expect(await authenticate(db, nextSession!)).toEqual(await authenticate(db, session!));
+test('a previously issued link without an invitation cannot create an administrator', async () => {
+	const email = address();
+	const token = await adminLink(email);
+	await run(db, 'DELETE FROM users WHERE email = ?', email);
+	await expect(redeemLoginLink(db, token, email)).resolves.toBeNull();
+	await expect(one(db, 'SELECT id FROM users WHERE email = ?', email)).resolves.toBeNull();
 });
 
 test('redeems a login link only once', async () => {
 	const email = address();
 	const token = await adminLink(email);
-	expect(await redeemLoginLink(db, token, email)).toBeTruthy();
-	await expect(redeemLoginLink(db, token, email)).resolves.toBeNull();
+	expect(await redeemLoginLink(db, token)).toBeTruthy();
+	await expect(redeemLoginLink(db, token)).resolves.toBeNull();
 });
 
 test('issues only one session for concurrent claims of the same link', async () => {
@@ -73,8 +75,8 @@ test('issues only one session for concurrent claims of the same link', async () 
 	const clock = vi.spyOn(Date, 'now').mockReturnValue(now());
 	try {
 		const results = await Promise.all([
-			redeemLoginLink(db, token, email),
-			redeemLoginLink(db, token, email)
+			redeemLoginLink(db, token),
+			redeemLoginLink(db, token)
 		]);
 		expect(results.filter(Boolean)).toHaveLength(1);
 	} finally {
@@ -86,7 +88,7 @@ test('rejects a link created more than fifteen minutes ago', async () => {
 	const email = address();
 	const token = await adminLink(email);
 	await run(db, 'UPDATE login_links SET expires_at = expires_at - ? WHERE email = ?', 16 * 60_000, email);
-	await expect(redeemLoginLink(db, token, email)).resolves.toBeNull();
+	await expect(redeemLoginLink(db, token)).resolves.toBeNull();
 });
 
 test('creates a member and marks the invitation used when redeeming the login link', async () => {
@@ -102,7 +104,7 @@ test('creates a member and marks the invitation used when redeeming the login li
 	expect(session).toBeTruthy();
 	await expect(authenticate(db, session!)).resolves.toMatchObject({ email, isAdmin: false });
 	expect((await invitationState())?.used_at).toBeGreaterThan(0);
-	await expect(createLoginLink(db, address(), invitation, undefined)).resolves.toBeNull();
+	await expect(createLoginLink(db, address(), invitation)).resolves.toBeNull();
 });
 
 test('only one of two concurrent links sharing an invitation can create a user', async () => {

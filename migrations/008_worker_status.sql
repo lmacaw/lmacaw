@@ -1,4 +1,0 @@
-CREATE TABLE worker_status (
-  id BOOLEAN PRIMARY KEY DEFAULT true CHECK (id),
-  last_seen TIMESTAMPTZ NOT NULL
-);

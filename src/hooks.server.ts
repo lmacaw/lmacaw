@@ -1,9 +1,11 @@
 import type { Handle } from '@sveltejs/kit';
-import { authenticate } from './lib/server/auth';
-import { db } from './lib/server/db';
+import { authenticate } from '$lib/server/auth';
+import { getEnv } from '$lib/server/env';
 
 export const handle: Handle = async ({ event, resolve }) => {
-	const value = event.cookies.get('lmacaw_session');
-	event.locals.user = value ? await authenticate(db(), value) : null;
+	const token = event.cookies.get('lmacaw_session');
+	event.locals.user = token && event.platform?.env
+		? await authenticate(getEnv(event.platform).DB, token)
+		: null;
 	return resolve(event);
 };

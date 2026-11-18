@@ -9,7 +9,8 @@
 	let { data } = $props();
 	const user = $derived(data.user);
 
-	let email = $state(''), password = $state(''), ready = $state(false);
+	let email = $state(''), ready = $state(false);
+	let signInPending = $state(false), signInSent = $state(false);
 	let message = $state(''), messageDownload = $state<Item | null>(null), messageTimer: ReturnType<typeof setTimeout> | undefined;
 	let canCopy = $state(true), menuButton: HTMLButtonElement = $state(undefined!);
 	let scope = $state<Scope>('library'), selectedCollection = $state(''), query = $state('');
@@ -72,15 +73,16 @@
 		items = []; loaded = false; void refresh();
 	}
 
-	// Sessions: reload the whole page on sign-in and sign-out, so no private state or in-flight
-	// response from one account can survive into another.
 	async function signIn(event: SubmitEvent) {
-		event.preventDefault(); message = '';
+		event.preventDefault();
+		if (signInPending) return;
+		signInPending = true; signInSent = false; message = '';
 		try {
-			const response = await api('/api/v1/session', 'POST', { email, password });
-			if (!response.ok) { message = response.status === 429 ? 'Too many attempts. Try again later.' : response.status === 403 ? 'Sign-in is not allowed from this address. Open Lmacaw at its main address, or add this one to ORIGIN.' : 'Unable to sign in.'; return; }
-			password = ''; window.location.assign('/');
+			const response = await api('/api/v1/session/link', 'POST', { email });
+			if (response.status !== 202) { message = response.status === 429 ? 'Too many attempts. Try again later.' : response.status === 403 ? 'Sign-in is not allowed from this address. Open Lmacaw at its main address, or add this one to ORIGIN.' : 'Unable to sign in.'; return; }
+			signInSent = true;
 		} catch { message = 'Unable to connect.'; }
+		finally { signInPending = false; }
 	}
 	async function signOut() {
 		await fetch('/api/v1/session', { method: 'DELETE' }).catch(() => {});
@@ -276,16 +278,11 @@
 			<h1>Sign in</h1>
 			<form onsubmit={signIn}>
 				<label class="field-label" for="email">Email</label>
-				<input id="email" class="input" type="email" autocomplete="username" bind:value={email} required />
-				<label class="field-label" for="password">Password</label>
-				<input id="password" class="input" type="password" autocomplete="current-password" bind:value={password} required />
-				<button class="button primary" type="submit" disabled={!ready}>Sign in</button>
+				<input id="email" class="input" type="email" autocomplete="email" bind:value={email} required />
+				<button class="button primary" type="submit" disabled={!ready || signInPending}>Sign in</button>
 			</form>
 			{#if message}<p class="error" role="alert">{message}</p>{/if}
-			<details class="forgot">
-				<summary>Forgot password?</summary>
-				<p class="hint">Ask whoever runs this Lmacaw server to reset it. On the server: <code>EMAIL=… NEW_PASSWORD=… bun run reset-password</code>.</p>
-			</details>
+			{#if signInSent}<p class="notice" role="status">Check your email for a sign-in link.</p>{/if}
 		</div>
 	</main>
 {:else}

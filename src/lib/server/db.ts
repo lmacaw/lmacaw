@@ -1,10 +1,17 @@
-import { SQL } from 'bun';
-import { databaseUrl } from './config';
+import type { D1Database, D1Result } from '@cloudflare/workers-types';
+export function one<T>(db: D1Database, sql: string, ...params: unknown[]): Promise<T | null> {
+	return db.prepare(sql).bind(...params).first<T>();
+}
 
-let client: SQL | undefined;
+export async function many<T>(db: D1Database, sql: string, ...params: unknown[]): Promise<T[]> {
+	const { results } = await db.prepare(sql).bind(...params).all<T>();
+	return results;
+}
 
-export function db(): SQL {
-	// A transaction left open (for example by a client bug) holds its locks until the session ends.
-	// Let PostgreSQL end such sessions instead of letting every pooled connection queue behind them.
-	return (client ??= new SQL(databaseUrl(process.env), { connection: { idle_in_transaction_session_timeout: 60_000 } }));
+export function run(db: D1Database, sql: string, ...params: unknown[]): Promise<D1Result> {
+	return db.prepare(sql).bind(...params).run();
+}
+
+export function now(): number {
+	return Date.now();
 }

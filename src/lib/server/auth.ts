@@ -1,80 +1,143 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import type { SQL } from 'bun';
+import type { D1Database } from '@cloudflare/workers-types';
+import { now, one, run } from './db';
+import { readJson } from './request';
 
 export type User = { id: string; email: string; isAdmin: boolean };
-const dummyPasswordHash = '$argon2id$v=19$m=65536,t=2,p=1$2R61DyXmSHwsgPW6zL3/FLFDJK1j/LeSCV5RAxTXuz0$tjFWgbddw0e121v23ThccYfsx32nRtCS8xo9MC/PFhE';
-const token = () => randomBytes(32).toString('base64url');
-const hashToken = (value: string) => createHash('sha256').update(value).digest('hex');
-const emailAddress = (value: string) => {
+
+const minute = 60_000;
+const day = 24 * 60 * minute;
+const tokenFormat = /^[A-Za-z0-9_-]{43}$/;
+const encoder = new TextEncoder();
+
+function randomToken(): string {
+	const bytes = crypto.getRandomValues(new Uint8Array(32));
+	return btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+}
+
+async function hashToken(token: string): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', encoder.encode(token));
+	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export function normalizeEmail(value: string): string {
 	const email = value.trim().toLowerCase();
-	if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Invalid email');
+	if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+		throw new Error('Invalid email');
+	}
 	return email;
-};
-const hashPassword = async (password: string) => {
-	if (password.length < 12 || password.length > 1024) throw new Error('Password must be at least 12 characters');
-	return Bun.password.hash(password, { algorithm: 'argon2id' });
-};
-
-export async function bootstrapAdmin(sql: SQL, address: string, password: string): Promise<User> {
-	const email = emailAddress(address);
-	const passwordHash = await hashPassword(password);
-	return sql.begin(async (tx) => {
-		await tx`SELECT pg_advisory_xact_lock(80725140)`;
-		const existing = await tx`SELECT id FROM users LIMIT 1`;
-		if (existing.length) throw new Error('Already initialized');
-		const id = randomUUID();
-		await tx`INSERT INTO users (id, email, password_hash, is_admin) VALUES (${id}, ${email}, ${passwordHash}, true)`;
-		return { id, email, isAdmin: true };
-	});
 }
 
-export async function createInvitation(sql: SQL, userId: string): Promise<string> {
-	const value = token();
-	const rows = await sql`INSERT INTO invitations (token_hash, created_by, expires_at)
-		SELECT ${hashToken(value)}, id, now() + interval '7 days' FROM users WHERE id = ${userId} AND is_admin = true RETURNING token_hash`;
-	if (!rows.length) throw new Error('Forbidden');
-	return value;
+export async function readLoginLinkRequest(request: Request): Promise<{ email: string; invitation: string | null }> {
+	const body = await readJson(request);
+	if (!body || typeof body !== 'object' || !('email' in body) || typeof body.email !== 'string') {
+		throw new Error('Invalid request');
+	}
+	const invitation = 'invitation' in body ? body.invitation : undefined;
+	if (invitation !== undefined && typeof invitation !== 'string') {
+		throw new Error('Invalid request');
+	}
+	return { email: normalizeEmail(body.email), invitation: invitation ?? null };
 }
 
-export async function redeemInvitation(sql: SQL, value: string, address: string, password: string): Promise<User> {
-	const email = emailAddress(address);
-	const passwordHash = await hashPassword(password);
-	return sql.begin(async (tx) => {
-		const claimed = await tx`UPDATE invitations SET used_at = now() WHERE token_hash = ${hashToken(value)} AND used_at IS NULL AND expires_at > now() RETURNING token_hash`;
-		if (!claimed.length) throw new Error('Invalid or expired invitation');
-		const id = randomUUID();
-		await tx`INSERT INTO users (id, email, password_hash) VALUES (${id}, ${email}, ${passwordHash})`;
-		return { id, email, isAdmin: false };
-	});
+export async function createLoginLink(
+	db: D1Database, email: string, invitation: string | null, adminEmail: string | undefined
+): Promise<string | null> {
+	email = normalizeEmail(email);
+	const adminAddress = adminEmail?.trim().toLowerCase();
+	let invitationHash: string | null = null;
+
+	if (email !== adminAddress && !await one(db, 'SELECT id FROM users WHERE email = ?', email)) {
+		if (!invitation || !tokenFormat.test(invitation)) return null;
+		invitationHash = await hashToken(invitation);
+		const available = await one(db, `
+			SELECT 1 FROM invitations WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+		`, invitationHash, now());
+		if (!available) return null;
+	}
+
+	const token = randomToken();
+	await run(db, 'INSERT INTO login_links (token_hash, email, invitation_hash, expires_at) VALUES (?, ?, ?, ?)',
+		await hashToken(token), email, invitationHash, now() + 15 * minute);
+	return token;
 }
 
-export async function login(sql: SQL, address: string, password: string): Promise<string | null> {
-	let email: string;
-	try { email = emailAddress(address); } catch { return null; }
-	const rows = await sql`SELECT id, password_hash FROM users WHERE email = ${email}`;
-	const matches = await Bun.password.verify(password, rows[0]?.password_hash ?? dummyPasswordHash);
-	if (!rows.length || !matches) return null;
-	const value = token();
-	await sql`INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (${hashToken(value)}, ${rows[0].id}, now() + interval '30 days')`;
-	return value;
+export async function redeemLoginLink(db: D1Database, token: string, adminEmail?: string): Promise<string | null> {
+	if (!tokenFormat.test(token)) return null;
+
+	const session = randomToken();
+	const [linkHash, sessionHash] = await Promise.all([hashToken(token), hashToken(session)]);
+	const timestamp = now();
+	const adminAddress = adminEmail?.trim().toLowerCase() ?? null;
+
+	// The batch commits atomically. Use -1 until it finishes so a rejected claim
+	// cannot match a previous redemption that committed in the same millisecond.
+	const [claim, , , sessionInsert] = await db.batch([
+		db.prepare(`
+			UPDATE login_links
+			SET used_at = -1
+			WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+				AND CASE WHEN invitation_hash IS NOT NULL THEN EXISTS (
+					SELECT 1 FROM invitations
+					WHERE token_hash = login_links.invitation_hash AND used_at IS NULL AND expires_at > ?
+				) ELSE email = ? OR EXISTS (SELECT 1 FROM users WHERE users.email = login_links.email) END
+		`).bind(linkHash, timestamp, timestamp, adminAddress),
+		db.prepare(`
+			UPDATE invitations
+			SET used_at = ?
+			WHERE used_at IS NULL AND expires_at > ? AND token_hash = (
+				SELECT invitation_hash FROM login_links WHERE token_hash = ? AND used_at = -1
+			)
+		`).bind(timestamp, timestamp, linkHash),
+		db.prepare(`
+			INSERT INTO users (id, email, is_admin, created_at)
+			SELECT ?, email, CASE WHEN email = ? THEN 1 ELSE 0 END, ?
+			FROM login_links WHERE token_hash = ? AND used_at = -1
+				AND (invitation_hash IS NULL OR EXISTS (
+					SELECT 1 FROM invitations
+					WHERE token_hash = login_links.invitation_hash AND used_at = ?
+				))
+			ON CONFLICT(email) DO NOTHING
+		`).bind(crypto.randomUUID(), adminAddress, timestamp, linkHash, timestamp),
+		db.prepare(`
+			INSERT INTO sessions (token_hash, user_id, expires_at)
+			SELECT ?, users.id, ?
+			FROM login_links JOIN users ON users.email = login_links.email
+			WHERE login_links.token_hash = ? AND login_links.used_at = -1
+				AND (login_links.invitation_hash IS NULL OR EXISTS (
+					SELECT 1 FROM invitations
+					WHERE token_hash = login_links.invitation_hash AND used_at = ?
+				))
+		`).bind(sessionHash, timestamp + 30 * day, linkHash, timestamp),
+		db.prepare('UPDATE login_links SET used_at = ? WHERE token_hash = ? AND used_at = -1')
+			.bind(timestamp, linkHash)
+	]);
+
+	return claim.meta.changes === 1 && sessionInsert.meta.changes === 1 ? session : null;
 }
 
-export async function authenticate(sql: SQL, value: string): Promise<User | null> {
-	const rows = await sql`SELECT u.id, u.email, u.is_admin FROM users u JOIN sessions s ON s.user_id = u.id WHERE s.token_hash = ${hashToken(value)} AND s.expires_at > now()`;
-	return rows.length ? { id: rows[0].id, email: rows[0].email, isAdmin: rows[0].is_admin } : null;
+export async function authenticate(db: D1Database, token: string): Promise<User | null> {
+	if (!tokenFormat.test(token)) return null;
+
+	const row = await one<{ id: string; email: string; is_admin: number }>(db, `
+		SELECT users.id, users.email, users.is_admin
+		FROM users JOIN sessions ON sessions.user_id = users.id
+		WHERE sessions.token_hash = ? AND sessions.expires_at > ?
+	`, await hashToken(token), now());
+	return row && { id: row.id, email: row.email, isAdmin: row.is_admin === 1 };
 }
 
-export async function logout(sql: SQL, value: string): Promise<void> {
-	await sql`DELETE FROM sessions WHERE token_hash = ${hashToken(value)}`;
+export async function logout(db: D1Database, token: string): Promise<void> {
+	if (!tokenFormat.test(token)) return;
+	await run(db, 'DELETE FROM sessions WHERE token_hash = ?', await hashToken(token));
 }
 
-// Sets a new password and signs the account out everywhere. Run by the operator from the server
-// (scripts/reset-password.ts); there is no mail delivery for self-service resets.
-export async function resetPassword(sql: SQL, address: string, password: string): Promise<boolean> {
-	const email = emailAddress(address);
-	const passwordHash = await hashPassword(password);
-	const rows = await sql`WITH account AS (UPDATE users SET password_hash = ${passwordHash} WHERE email = ${email} RETURNING id),
-		ended AS (DELETE FROM sessions WHERE user_id IN (SELECT id FROM account))
-		SELECT id FROM account`;
-	return rows.length > 0;
+export async function createInvitation(db: D1Database, adminId: string): Promise<string> {
+	const token = randomToken();
+	const invitation = await one(db, `
+		INSERT INTO invitations (token_hash, created_by, expires_at)
+		SELECT ?, id, ? FROM users WHERE id = ? AND is_admin = 1
+		RETURNING token_hash
+	`, await hashToken(token), now() + 7 * day, adminId);
+	if (!invitation) throw new Error('Forbidden');
+	return token;
 }

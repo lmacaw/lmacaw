@@ -16,7 +16,9 @@ export default defineConfig({
 				bindings: {
 					TEST_MIGRATIONS: await readD1Migrations('./migrations'),
 					AI_MODE: 'fake',
-					ORIGIN: 'http://localhost:4173'
+					ORIGIN: 'http://localhost:4173',
+					// wrangler.jsonc sets AUTH_MODE=public for lmacaw.meme; tests default to password mode and set public per test.
+					AUTH_MODE: 'password'
 				}
 			}
 		})

@@ -3,12 +3,12 @@
 	import type { Collection, Scope } from '$lib/types';
 
 	type Props = {
-		scope: Scope; selectedCollection: string; collections: Collection[]; email: string; isAdmin: boolean;
+		scope: Scope; selectedCollection: string; collections: Collection[]; email: string; canInvite: boolean; publicMode: boolean;
 		theme: 'system' | 'light' | 'dark'; invitationLink: string; open: boolean;
 		onselect: (scope: Scope, collection?: string) => void; onnewcollection: () => void; oninvite: () => void;
 		ontheme: (value: 'system' | 'light' | 'dark') => void; onsignout: () => void; onclose: () => void;
 	};
-	let { scope, selectedCollection, collections, email, isAdmin, theme, invitationLink, open, onselect, onnewcollection, oninvite, ontheme, onsignout, onclose }: Props = $props();
+	let { scope, selectedCollection, collections, email, canInvite, publicMode, theme, invitationLink, open, onselect, onnewcollection, oninvite, ontheme, onsignout, onclose }: Props = $props();
 	const views = [
 		{ scope: 'library', label: 'Library', icon: 'image' },
 		{ scope: 'favorites', label: 'Favorites', icon: 'heart' },
@@ -46,7 +46,7 @@
 		{/each}
 	</nav>
 	<div class="sidebar-footer">
-		{#if isAdmin}
+		{#if canInvite}
 			<button class="nav-item" onclick={oninvite}><Icon name="link" size={16} /><span>Invite</span></button>
 			{#if invitationLink}
 				<label class="field-label" for="invite-link">Invitation link</label>
@@ -56,7 +56,11 @@
 		<div class="account">
 			<span class="account-email" title={email}>{email}</span>
 			<button class="icon-button small" aria-label="Appearance: {themes[theme].label}" title="Appearance: {themes[theme].label}" onclick={() => ontheme(themes[theme].next)}><Icon name={themes[theme].icon} size={15} /></button>
-			<button class="icon-button small" aria-label="Sign out" title="Sign out" onclick={onsignout}><Icon name="logout" size={15} /></button>
+			{#if publicMode}
+				<a class="icon-button small" aria-label="Sign out" title="Sign out" href="/cdn-cgi/access/logout" data-sveltekit-reload><Icon name="logout" size={15} /></a>
+			{:else}
+				<button class="icon-button small" aria-label="Sign out" title="Sign out" onclick={onsignout}><Icon name="logout" size={15} /></button>
+			{/if}
 		</div>
 	</div>
 </aside>

@@ -30,7 +30,7 @@ Open the configured origin, sign in, and use **Invite** to create a single-use l
 
 PostgreSQL and image data use separate named volumes. Do not delete those volumes when upgrading. To use S3-compatible storage instead, set `MEDIA_STORAGE=s3` and configure the S3 variables shown in `.env.example`; create a private bucket before starting the application.
 
-Release tags publish a private image, `ghcr.io/phucnht/lmacaw:<version>` (also `:<major>.<minor>` and `:latest`), for amd64 and arm64 through `.github/workflows/publish.yml`. Hosts that pull it need `docker login ghcr.io` with a token that has `read:packages`.
+Release tags publish an image, `ghcr.io/lmacaw/lmacaw:<version>` (also `:<major>.<minor>` and `:latest`), for amd64 and arm64 through `.github/workflows/publish.yml`. Hosts that pull it need `docker login ghcr.io` with a token that has `read:packages`.
 
 ## Optional AI worker
 
@@ -80,7 +80,7 @@ Discover searches [Openverse](https://openverse.org) anonymously (20 results per
 `render.yaml` is a Render Blueprint: a Docker web service (`starter`) deployed from `main`, and a PostgreSQL 17 database (`basic-256mb`, no public access) in Singapore. Change plans or region in the file before creating it. Render's filesystem is temporary, so media goes to S3-compatible storage; Cloudflare R2 works:
 
 1. In Cloudflare, create a private R2 bucket and an R2 API token with **Object Read & Write** on that bucket only. Note the bucket name, access key ID, secret, and the S3 endpoint `https://<account-id>.r2.cloudflarestorage.com`.
-2. In Render, choose **New → Blueprint**, connect `phucnht/lmacaw`, and enter `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY` when prompted. `AI_WORKER_TOKEN` is generated; copy it from the service's environment for the worker.
+2. In Render, choose **New → Blueprint**, connect `lmacaw/lmacaw`, and enter `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY` when prompted. `AI_WORKER_TOKEN` is generated; copy it from the service's environment for the worker.
 3. The container runs migrations on start, and `ORIGIN` defaults to the URL Render assigns (`RENDER_EXTERNAL_URL`). Set `ORIGIN` yourself when you add a custom domain.
 4. Create the administrator once from the service's **Shell**, typing the values at the prompts so the password stays out of shell history: `read -r ADMIN_EMAIL; read -rs ADMIN_PASSWORD; export ADMIN_EMAIL ADMIN_PASSWORD; bun run bootstrap-admin`.
 

@@ -1,6 +1,6 @@
 name: Publish image
 
-# Release tags (v1.2.3) publish ghcr.io/phucnht/lmacaw:1.2.3, :1.2 and :latest.
+# Release tags (v1.2.3) publish ghcr.io/lmacaw/lmacaw:1.2.3, :1.2 and :latest.
 # A manual run publishes only a sha-<commit> tag, for testing a build without moving release tags.
 on:
   push:

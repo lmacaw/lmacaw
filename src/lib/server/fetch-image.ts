@@ -3,6 +3,8 @@ import { sniffImageType } from './media-validation';
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_REDIRECTS = 4;
 const SIGNATURE_BYTES = 12;
+// Some hosts (Wikimedia among them) refuse requests that carry no User-Agent.
+const REQUEST_HEADERS = { 'user-agent': 'Lmacaw/1.0 (+https://github.com/lmacaw/lmacaw)', accept: 'image/*' };
 type Fetcher = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
 function isBlockedIPv4(first: number, second: number): boolean {
@@ -117,7 +119,7 @@ export async function fetchPublicImage(input: string, fetcher: Fetcher = fetch):
 	let url = parseUrl(input);
 	for (let redirects = 0; ; redirects++) {
 		signal.throwIfAborted();
-		const response = await fetcher(url, { redirect: 'manual', signal });
+		const response = await fetcher(url, { redirect: 'manual', signal, headers: REQUEST_HEADERS });
 		const location = response.headers.get('location');
 		if (response.status >= 300 && response.status < 400 && location) {
 			void response.body?.cancel().catch(() => {});

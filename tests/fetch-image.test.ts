@@ -38,7 +38,8 @@ test('uses manual redirects and rejects a redirect to a private host before fetc
 	}));
 	await expect(fetchPublicImage(imageUrl, fetcher)).rejects.toThrow('Destination is not public');
 	expect(fetcher).toHaveBeenCalledExactlyOnceWith(new URL(imageUrl), {
-		redirect: 'manual', signal: expect.any(AbortSignal)
+		redirect: 'manual', signal: expect.any(AbortSignal),
+		headers: { 'user-agent': expect.stringMatching(/^Lmacaw\//), accept: 'image/*' }
 	});
 });
 
@@ -53,7 +54,7 @@ test('follows four relative redirects using the current URL and one timeout', as
 	expect(new Uint8Array(await response.arrayBuffer())).toEqual(png);
 	expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual(paths.map((path) => `https://images.example:8080${path}`));
 	const signal = fetcher.mock.calls[0][1]?.signal;
-	for (const [, init] of fetcher.mock.calls) expect(init).toEqual({ redirect: 'manual', signal });
+	for (const [, init] of fetcher.mock.calls) expect(init).toEqual({ redirect: 'manual', signal, headers: expect.any(Object) });
 });
 
 test('rejects a fifth redirect', async () => {

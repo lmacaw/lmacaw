@@ -37,12 +37,13 @@
 
 <dialog bind:this={dialog} class="detail-dialog" aria-label="Meme details" onclose={onclose}>
 	{#if item}
+		{@const mediaRoute = `/api/v1/items/${item.id}/media`}
 		<div class="detail">
-			<div class="detail-media"><img src={`/api/v1/items/${item.id}/media`} alt={item.description || item.ai_description || 'Meme'} /></div>
+			<div class="detail-media"><img src={mediaRoute} alt={item.description || item.ai_description || 'Meme'} /></div>
 			<div class="detail-panel">
 				<div class="detail-toolbar">
 					{#if canCopy}<button class="icon-button" onclick={() => oncopy(item)} aria-label="Copy image" title="Copy image"><Icon name="copy" /></button>{/if}
-					<a class="icon-button" href={`/api/v1/items/${item.id}/media`} download aria-label="Download" title="Download"><Icon name="download" /></a>
+					<a class="icon-button" href={`${mediaRoute}?download=1`} download aria-label="Download" title="Download"><Icon name="download" /></a>
 					{#if readonly}
 						<button class="icon-button" onclick={() => onsave(item)} aria-label="Save to library" title="Save to library"><Icon name="bookmark" /></button>
 					{:else}

@@ -26,11 +26,11 @@ export async function allowAttempt(sql: SQL, purpose: string, address: string): 
 	return rows[0].attempts <= 10;
 }
 
-// A browser request is trusted when it comes from ORIGIN (url.origin) or from one of the
-// comma-separated ALLOWED_ORIGINS, such as a LAN address next to the public domain.
+// A browser request is trusted when it comes from one of the ORIGIN addresses (scripts/serve.ts
+// keeps the full comma-separated list in LMACAW_ORIGINS) or from url.origin itself.
 // Requests without an Origin header (same-origin GETs, the worker, scripts) pass.
-export function trustedOrigin(request: Request, url: URL, extra = process.env.ALLOWED_ORIGINS ?? ''): boolean {
+export function trustedOrigin(request: Request, url: URL, origins = process.env.LMACAW_ORIGINS ?? ''): boolean {
 	const origin = request.headers.get('origin');
 	if (!origin || origin === url.origin) return true;
-	return extra.split(',').some((entry) => entry.trim().replace(/\/+$/, '') === origin);
+	return origins.split(',').includes(origin);
 }

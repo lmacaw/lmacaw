@@ -17,10 +17,15 @@
   "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "lmacaw-media" }],
   "ai": { "binding": "AI" },
   "vectorize": [{ "binding": "VECTORIZE", "index_name": "lmacaw-items" }],
-  "routes": [{ "pattern": "lmacaw.meme", "custom_domain": true }],
+  "routes": [
+    { "pattern": "lmacaw.meme", "custom_domain": true },
+    { "pattern": "admin.lmacaw.meme", "custom_domain": true }
+  ],
   "triggers": { "crons": ["* * * * *"] },
   "vars": {
-    "ORIGIN": "https://lmacaw.meme",
+    "AUTH_MODE": "public",
+    "ADMIN_HOST": "admin.lmacaw.meme",
+    "ORIGIN": "https://lmacaw.meme,https://admin.lmacaw.meme",
     "R2_BUCKET": "lmacaw-media",
     "MAIL_FROM": "Lmacaw <hello@lmacaw.meme>"
   }

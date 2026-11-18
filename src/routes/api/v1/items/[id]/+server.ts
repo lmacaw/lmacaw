@@ -3,15 +3,14 @@ import type { RequestHandler } from './$types';
 import { db } from '../../../../../lib/server/db';
 import { deleteItem } from '../../../../../lib/server/library';
 import { enqueueDocument } from '../../../../../lib/server/ai';
-import { readJson } from '../../../../../lib/server/request';
+import { readJson, trustedOrigin } from '../../../../../lib/server/request';
 import { storageFromEnv } from '../../../../../lib/server/storage';
 
 const validId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
 export const PATCH: RequestHandler = async ({ locals, request, url, params }) => {
 	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
-	const origin = request.headers.get('origin');
-	if (origin && origin !== url.origin) return json({ error: 'Forbidden' }, { status: 403 });
+	if (!trustedOrigin(request, url)) return json({ error: 'Forbidden' }, { status: 403 });
 	if (!validId(params.id)) return new Response(null, { status: 404 });
 	let body: unknown;
 	try { body = await readJson(request); } catch { return json({ error: 'Invalid request' }, { status: 400 }); }
@@ -39,8 +38,7 @@ export const PATCH: RequestHandler = async ({ locals, request, url, params }) =>
 
 export const DELETE: RequestHandler = async ({ locals, request, url, params }) => {
 	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
-	const origin = request.headers.get('origin');
-	if (origin && origin !== url.origin) return json({ error: 'Forbidden' }, { status: 403 });
+	if (!trustedOrigin(request, url)) return json({ error: 'Forbidden' }, { status: 403 });
 	if (!validId(params.id)) return new Response(null, { status: 404 });
 	try { await deleteItem(db(), storageFromEnv(), locals.user.id, params.id); }
 	catch (error) { if (error instanceof Error && error.message === 'Item not found') return new Response(null, { status: 404 }); throw error; }

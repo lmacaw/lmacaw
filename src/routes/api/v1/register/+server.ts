@@ -2,11 +2,10 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { redeemInvitation } from '../../../../lib/server/auth';
 import { db } from '../../../../lib/server/db';
-import { allowAttempt, readJson } from '../../../../lib/server/request';
+import { allowAttempt, readJson, trustedOrigin } from '../../../../lib/server/request';
 
 export const POST: RequestHandler = async ({ request, url, getClientAddress }) => {
-	const origin = request.headers.get('origin');
-	if (origin && origin !== url.origin) return json({ error: 'Forbidden' }, { status: 403 });
+	if (!trustedOrigin(request, url)) return json({ error: 'Forbidden' }, { status: 403 });
 	let body: unknown;
 	try { body = await readJson(request); } catch { return json({ error: 'Invalid request' }, { status: 400 }); }
 	if (!body || typeof body !== 'object' || !('token' in body) || !('email' in body) || !('password' in body) || typeof body.token !== 'string' || !/^[a-zA-Z0-9_-]{43}$/.test(body.token) || typeof body.email !== 'string' || typeof body.password !== 'string') {

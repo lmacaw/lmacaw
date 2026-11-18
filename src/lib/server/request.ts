@@ -25,3 +25,12 @@ export async function allowAttempt(sql: SQL, purpose: string, address: string): 
 		RETURNING attempts`;
 	return rows[0].attempts <= 10;
 }
+
+// A browser request is trusted when it comes from ORIGIN (url.origin) or from one of the
+// comma-separated ALLOWED_ORIGINS, such as a LAN address next to the public domain.
+// Requests without an Origin header (same-origin GETs, the worker, scripts) pass.
+export function trustedOrigin(request: Request, url: URL, extra = process.env.ALLOWED_ORIGINS ?? ''): boolean {
+	const origin = request.headers.get('origin');
+	if (!origin || origin === url.origin) return true;
+	return extra.split(',').some((entry) => entry.trim().replace(/\/+$/, '') === origin);
+}

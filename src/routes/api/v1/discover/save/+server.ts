@@ -4,13 +4,12 @@ import { db } from '../../../../../lib/server/db';
 import { fetchPublicImage } from '../../../../../lib/server/import';
 import { createItem } from '../../../../../lib/server/library';
 import { getOpenverseImage } from '../../../../../lib/server/openverse';
-import { readJson } from '../../../../../lib/server/request';
+import { readJson, trustedOrigin } from '../../../../../lib/server/request';
 import { storageFromEnv } from '../../../../../lib/server/storage';
 
 export const POST: RequestHandler = async ({ request, url, locals }) => {
 	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
-	const origin = request.headers.get('origin');
-	if (origin && origin !== url.origin) return json({ error: 'Forbidden' }, { status: 403 });
+	if (!trustedOrigin(request, url)) return json({ error: 'Forbidden' }, { status: 403 });
 	let body: unknown;
 	try { body = await readJson(request); } catch { return json({ error: 'Invalid request' }, { status: 400 }); }
 	if (!body || typeof body !== 'object' || !('id' in body) || typeof body.id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.id)) return json({ error: 'Invalid image' }, { status: 400 });

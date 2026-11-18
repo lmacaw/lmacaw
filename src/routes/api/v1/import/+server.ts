@@ -3,13 +3,12 @@ import type { RequestHandler } from './$types';
 import { db } from '../../../../lib/server/db';
 import { fetchPublicImage } from '../../../../lib/server/import';
 import { createItem } from '../../../../lib/server/library';
-import { readJson } from '../../../../lib/server/request';
+import { readJson, trustedOrigin } from '../../../../lib/server/request';
 import { storageFromEnv } from '../../../../lib/server/storage';
 
 export const POST: RequestHandler = async ({ request, url, locals }) => {
 	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
-	const origin = request.headers.get('origin');
-	if (origin && origin !== url.origin) return json({ error: 'Forbidden' }, { status: 403 });
+	if (!trustedOrigin(request, url)) return json({ error: 'Forbidden' }, { status: 403 });
 	let body: unknown;
 	try { body = await readJson(request); } catch { return json({ error: 'Invalid request' }, { status: 400 }); }
 	if (!body || typeof body !== 'object' || !('url' in body) || typeof body.url !== 'string' || body.url.length > 2048) return json({ error: 'Invalid URL' }, { status: 400 });

@@ -4,6 +4,14 @@ import type { User } from '$lib/server/auth';
 import type { Env } from '$lib/server/env';
 import { createItem, type NewItem } from '$lib/server/library';
 import { newKey } from '$lib/server/storage';
+import * as collections from '../src/routes/api/v1/collections/+server';
+import * as collection from '../src/routes/api/v1/collections/[id]/+server';
+import * as collectionItems from '../src/routes/api/v1/collections/[id]/items/+server';
+import { GET as discover } from '../src/routes/api/v1/discover/+server';
+import { GET as fetchImage } from '../src/routes/api/v1/fetch/+server';
+import * as items from '../src/routes/api/v1/items/+server';
+import * as item from '../src/routes/api/v1/items/[id]/+server';
+import { POST as copy } from '../src/routes/api/v1/items/[id]/copy/+server';
 
 export const png = new Uint8Array([
 	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
@@ -49,12 +57,14 @@ export const unsignedEnv = {
 	...env, R2_ACCOUNT_ID: undefined, R2_BUCKET: undefined, R2_ACCESS_KEY_ID: undefined, R2_SECRET_ACCESS_KEY: undefined
 };
 
-export async function user(): Promise<User> {
+export const publicBindings = { AUTH_MODE: 'public' } satisfies Partial<Env>;
+
+export async function user(isAdmin = false): Promise<User> {
 	const id = crypto.randomUUID();
 	const email = `${id}@example.com`;
-	await env.DB.prepare('INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)')
-		.bind(id, email, Date.now()).run();
-	return { id, email, isAdmin: false };
+	await env.DB.prepare('INSERT INTO users (id, email, is_admin, created_at) VALUES (?, ?, ?, ?)')
+		.bind(id, email, Number(isAdmin), Date.now()).run();
+	return { id, email, isAdmin };
 }
 
 export function imageInput(overrides: Partial<NewItem> = {}): NewItem {
@@ -80,6 +90,12 @@ export function eventFor<Path extends Route>(
 		request, url, params: id === undefined ? {} : { id }, locals: { user: actor }, route: { id: route },
 		platform: { env: { ...unsignedEnv, ...bindings } }
 	} as unknown as RequestEvent<Path extends `${string}[id]${string}` ? { id: string } : Record<string, never>, Path>;
+}
+
+export function publicEventFor<Path extends Route>(
+	route: Path, path: string, actor: User | null, init?: RequestInit, id?: string
+) {
+	return eventFor(route, path, actor, init, id, publicBindings);
 }
 
 export const itemsRoute = '/api/v1/items';
@@ -110,6 +126,35 @@ export async function uploadEvent(actor: User | null, form = uploadForm(), bindi
 		},
 		body
 	}, undefined, bindings);
+}
+
+export function memberRouteCases(bindings?: Partial<Env>) {
+	const id = '67e55044-10b1-426f-9247-bb680e5fe0c8';
+	const itemPath = `${itemsRoute}/${id}`;
+	const collectionsRoute = '/api/v1/collections';
+	const collectionPath = `${collectionsRoute}/${id}`;
+	const event = <Path extends Route>(route: Path, method: string, path: string = route, param?: string) =>
+		eventFor(route, path, null, { method }, param, bindings);
+
+	return [
+		['GET items (default scope)', () => items.GET(listEvent(null, '', bindings))],
+		['GET items (library)', () => items.GET(listEvent(null, '?scope=library', bindings))],
+		['GET items (favorites)', () => items.GET(listEvent(null, '?scope=favorites', bindings))],
+		['GET items (collection)', () => items.GET(listEvent(null, `?scope=collection&collection=${id}`, bindings))],
+		['GET items (collection without scope)', () => items.GET(listEvent(null, `?collection=${id}`, bindings))],
+		['POST items', () => items.POST(event(itemsRoute, 'POST'))],
+		['PATCH item', () => item.PATCH(event('/api/v1/items/[id]', 'PATCH', itemPath, id))],
+		['DELETE item', () => item.DELETE(event('/api/v1/items/[id]', 'DELETE', itemPath, id))],
+		['POST copy', () => copy(event('/api/v1/items/[id]/copy', 'POST', `${itemPath}/copy`, id))],
+		['GET collections', () => collections.GET(event(collectionsRoute, 'GET'))],
+		['POST collections', () => collections.POST(event(collectionsRoute, 'POST'))],
+		['PATCH collection', () => collection.PATCH(event('/api/v1/collections/[id]', 'PATCH', collectionPath, id))],
+		['DELETE collection', () => collection.DELETE(event('/api/v1/collections/[id]', 'DELETE', collectionPath, id))],
+		['POST collection items', () => collectionItems.POST(event('/api/v1/collections/[id]/items', 'POST', `${collectionPath}/items`, id))],
+		['DELETE collection items', () => collectionItems.DELETE(event('/api/v1/collections/[id]/items', 'DELETE', `${collectionPath}/items?itemId=${id}`, id))],
+		['GET discover', () => discover(event('/api/v1/discover', 'GET', '/api/v1/discover?q=cat'))],
+		['GET fetch', () => fetchImage(event('/api/v1/fetch', 'GET', '/api/v1/fetch?url=https://images.example/cat.png'))]
+	] as const;
 }
 
 /** R2 keys in the test bucket. Earlier tests in a file leave objects behind, so compare against a snapshot. */

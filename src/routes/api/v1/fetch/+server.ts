@@ -1,10 +1,15 @@
 import { json } from '@sveltejs/kit';
+import { getEnv } from '$lib/server/env';
 import { fetchPublicImage } from '$lib/server/fetch-image';
 import { getOpenverseImage } from '$lib/server/openverse';
+import { requireRole } from '$lib/server/request';
 import type { RequestHandler } from './$types';
 
-export const GET: RequestHandler = async ({ locals, url }) => {
-	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
+export const GET: RequestHandler = async (event) => {
+	const { url, platform } = event;
+	const env = getEnv(platform);
+	const caller = requireRole(event, 'member', env);
+	if (caller instanceof Response) return caller;
 
 	const source = url.searchParams.get('url');
 	const openverse = url.searchParams.get('openverse');

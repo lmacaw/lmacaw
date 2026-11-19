@@ -1,18 +1,20 @@
-import { json } from '@sveltejs/kit';
 import { getEnv } from '$lib/server/env';
 import { getVisibleItem, validItemId } from '$lib/server/library';
 import { mediaUrl } from '$lib/server/media-url';
+import { requireRole } from '$lib/server/request';
 import type { RequestHandler } from './$types';
 
 const extensions: Record<string, string> = {
 	'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp'
 };
 
-export const GET: RequestHandler = async ({ locals, params, url, platform }) => {
-	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
-	if (!validItemId(params.id)) return new Response(null, { status: 404 });
+export const GET: RequestHandler = async (event) => {
+	const { params, url, platform } = event;
 	const env = getEnv(platform);
-	const item = await getVisibleItem(env.DB, locals.user.id, params.id.toLowerCase());
+	const caller = requireRole(event, 'anon', env);
+	if (caller instanceof Response) return caller;
+	if (!validItemId(params.id)) return new Response(null, { status: 404 });
+	const item = await getVisibleItem(env.DB, caller?.id ?? null, params.id.toLowerCase());
 	if (!item) return new Response(null, { status: 404 });
 
 	const thumbnail = url.searchParams.get('size') === 'thumbnail' && item.thumbnailKey !== null;

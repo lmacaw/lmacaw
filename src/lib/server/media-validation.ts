@@ -7,3 +7,8 @@ export function sniffImageType(data: Uint8Array): string | null {
 	if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'image/webp';
 	return null;
 }
+
+export function isThumbnailType(bytes: Uint8Array): boolean {
+	const type = sniffImageType(bytes);
+	return type === 'image/webp' || type === 'image/jpeg';
+}

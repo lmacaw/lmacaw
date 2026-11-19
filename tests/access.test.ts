@@ -44,7 +44,7 @@ test('verifies RS256 with either audience format and caches the keys', async () 
 	const token = await sign({ aud: ['other', env.ACCESS_AUD], exp: time - 59, nbf: time + 60, iat: time + 60 });
 	await expect(verifyAccessToken(token, env, fetcher, time)).resolves.toEqual({ email });
 	expect(fetcher).toHaveBeenCalledExactlyOnceWith(
-		`https://${env.ACCESS_TEAM_DOMAIN}/cdn-cgi/access/certs`, { redirect: 'error' }
+		`https://${env.ACCESS_TEAM_DOMAIN}/cdn-cgi/access/certs`, { redirect: 'manual' }
 	);
 });
 

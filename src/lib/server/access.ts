@@ -18,7 +18,7 @@ function decodeBase64Url(value: string): Uint8Array<ArrayBuffer> {
 }
 
 async function fetchKeys(domain: string, fetcher: typeof fetch): Promise<Map<string, AccessKey>> {
-	const response = await fetcher(`https://${domain}/cdn-cgi/access/certs`, { redirect: 'error' });
+	const response = await fetcher(`https://${domain}/cdn-cgi/access/certs`, { redirect: 'manual' });
 	if (!response.ok) throw new Error('Unable to fetch Access keys');
 
 	const body = await response.json() as { keys?: AccessKey[] };
@@ -64,7 +64,9 @@ export async function verifyAccessToken(
 		const key = await crypto.subtle.importKey('jwk', jwk, algorithm, false, ['verify']);
 		const signed = encoder.encode(`${encodedHeader}.${encodedPayload}`);
 		return await crypto.subtle.verify(algorithm, key, signature, signed) ? { email: claims.email } : null;
-	} catch {
+	} catch (error) {
+		// A rejected token is normal; an exception here (bad keys, failed fetch) is worth seeing in `wrangler tail`.
+		console.warn('Access token check failed:', error instanceof Error ? error.message : error);
 		return null;
 	}
 }

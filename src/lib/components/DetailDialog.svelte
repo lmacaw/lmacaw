@@ -3,12 +3,13 @@
 	import type { Collection, Item } from '$lib/types';
 
 	type Props = {
-		item: Item | null; canCopy: boolean; readonly: boolean; collections: Collection[]; message: string; aiEnabled: boolean;
+		item: Item | null; canCopy: boolean; readonly: boolean; publicLibrary: boolean; collections: Collection[]; message: string; aiEnabled: boolean;
 		onclose: () => void; oncopy: (item: Item) => void; onupdate: (item: Item, patch: Record<string, unknown>) => void;
 		ondelete: (item: Item) => void; onsave: (item: Item) => void; onretry: (item: Item) => void;
 		ontogglecollection: (collection: Collection, checked: boolean) => void;
 	};
-	let { item, canCopy, readonly, collections, message, aiEnabled, onclose, oncopy, onupdate, ondelete, onsave, onretry, ontogglecollection }: Props = $props();
+	let { item, canCopy, readonly, publicLibrary, collections, message, aiEnabled, onclose, oncopy, onupdate, ondelete, onsave, onretry, ontogglecollection }: Props = $props();
+	const readOnly = $derived(readonly || publicLibrary);
 	let dialog = $state<HTMLDialogElement>(undefined!);
 	let description = $state(''), tags = $state(''), text = $state(''), loadedId = '';
 
@@ -37,15 +38,16 @@
 
 <dialog bind:this={dialog} class="detail-dialog" aria-label="Meme details" onclose={onclose}>
 	{#if item}
+		{@const mediaRoute = `/api/v1/items/${item.id}/media`}
 		<div class="detail">
-			<div class="detail-media"><img src={`/api/v1/items/${item.id}/media`} alt={item.description || item.ai_description || 'Meme'} /></div>
+			<div class="detail-media"><img src={mediaRoute} alt={item.description || item.ai_description || 'Meme'} /></div>
 			<div class="detail-panel">
 				<div class="detail-toolbar">
 					{#if canCopy}<button class="icon-button" onclick={() => oncopy(item)} aria-label="Copy image" title="Copy image"><Icon name="copy" /></button>{/if}
-					<a class="icon-button" href={`/api/v1/items/${item.id}/media`} download aria-label="Download" title="Download"><Icon name="download" /></a>
-					{#if readonly}
+					<a class="icon-button" href={`${mediaRoute}?download=1`} download aria-label="Download" title="Download"><Icon name="download" /></a>
+					{#if !publicLibrary && readonly}
 						<button class="icon-button" onclick={() => onsave(item)} aria-label="Save to library" title="Save to library"><Icon name="bookmark" /></button>
-					{:else}
+					{:else if !publicLibrary}
 						<button class="icon-button" class:on={item.favorite} aria-pressed={item.favorite} onclick={() => onupdate(item, { favorite: !item.favorite })} aria-label={item.favorite ? 'Unfavorite' : 'Favorite'} title="Favorite"><Icon name="heart" filled={item.favorite} /></button>
 						<button class="icon-button" class:on={item.shared} aria-pressed={item.shared} onclick={() => onupdate(item, { shared: !item.shared })} aria-label={item.shared ? 'Unshare' : 'Share'} title={item.shared ? 'Shared with members' : 'Share with members'}><Icon name="share" /></button>
 						<button class="icon-button danger" onclick={() => ondelete(item)} aria-label="Delete" title="Delete"><Icon name="trash" /></button>
@@ -56,9 +58,9 @@
 				{#if message}<p class="detail-message" role="status">{message}</p>{/if}
 				{#if !canCopy}<p class="hint">This browser cannot copy images. Use Download instead.</p>{/if}
 				{#if aiLabel}
-					<p class="ai-state">{aiLabel}{#if item.ai_state === 'failed' && !readonly} <button class="text-button" onclick={() => onretry(item)}>Retry AI</button>{/if}</p>
+					<p class="ai-state">{aiLabel}{#if item.ai_state === 'failed' && !readOnly} <button class="text-button" onclick={() => onretry(item)}>Retry AI</button>{/if}</p>
 				{/if}
-				{#if readonly}
+				{#if readOnly}
 					<dl class="readonly-fields">
 						{#if item.description || item.ai_description}<dt>Description</dt><dd>{item.description || item.ai_description}</dd>{/if}
 						{#if item.tags.length}<dt>Tags</dt><dd>{item.tags.join(', ')}</dd>{/if}
@@ -90,7 +92,7 @@
 						{#if source.attribution}<p>{source.attribution}</p>{/if}
 						<p class="source-links">
 							{#if webUrl(source.source)}<a href={webUrl(source.source)} target="_blank" rel="noreferrer">Original page</a>{/if}
-							{#if webUrl(source.creatorUrl)}<a href={webUrl(source.creatorUrl)} target="_blank" rel="noreferrer">{source.creator || 'Creator'}</a>{/if}
+							{#if webUrl(source.creatorUrl)}<a href={webUrl(source.creatorUrl)} target="_blank" rel="noreferrer">{source.creator || 'Creator'}</a>{:else if source.creator}<span>{source.creator}</span>{/if}
 							{#if webUrl(source.licenseUrl)}<a href={webUrl(source.licenseUrl)} target="_blank" rel="noreferrer">License {source.license?.toUpperCase()}</a>{:else if source.license}<span>License {source.license.toUpperCase()}</span>{/if}
 						</p>
 						<p class="hint">Verify license terms at the original source.</p>

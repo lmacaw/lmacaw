@@ -1,21 +1,38 @@
 import { json } from '@sveltejs/kit';
+import { passwordCredentials, readCredentialBody, registerWithInvitation, setSessionCookie } from '$lib/server/auth';
+import { authMode, getEnv } from '$lib/server/env';
+import { allowAttempt, clientAddress, trustedOrigin } from '$lib/server/request';
 import type { RequestHandler } from './$types';
-import { redeemInvitation } from '../../../../lib/server/auth';
-import { db } from '../../../../lib/server/db';
-import { allowAttempt, readJson, trustedOrigin, clientAddress } from '../../../../lib/server/request';
 
-export const POST: RequestHandler = async ({ request, url, getClientAddress }) => {
-	if (!trustedOrigin(request, url)) return json({ error: 'Forbidden' }, { status: 403 });
-	let body: unknown;
-	try { body = await readJson(request); } catch { return json({ error: 'Invalid request' }, { status: 400 }); }
-	if (!body || typeof body !== 'object' || !('token' in body) || !('email' in body) || !('password' in body) || typeof body.token !== 'string' || !/^[a-zA-Z0-9_-]{43}$/.test(body.token) || typeof body.email !== 'string' || typeof body.password !== 'string') {
+export const POST: RequestHandler = async ({ request, url, cookies, platform }) => {
+	const env = getEnv(platform);
+	if (authMode(env) === 'public') return json({ error: 'Not found' }, { status: 404 });
+	if (!trustedOrigin(request, url, env.ORIGIN)) return json({ error: 'Forbidden' }, { status: 403 });
+
+	let credentials: ReturnType<typeof passwordCredentials>;
+	let invitation: string;
+	try {
+		const body = await readCredentialBody(request);
+		if (!body || typeof body !== 'object' || !('invitation' in body) || typeof body.invitation !== 'string') {
+			return json({ error: 'Invalid request' }, { status: 400 });
+		}
+		invitation = body.invitation;
+		credentials = passwordCredentials(body);
+	} catch {
 		return json({ error: 'Invalid request' }, { status: 400 });
 	}
-	if (!(await allowAttempt(db(), 'register', clientAddress(getClientAddress)))) return json({ error: 'Try again later' }, { status: 429 });
+	if (!await allowAttempt(env.DB, `register:ip:${clientAddress(request)}`)) {
+		return json({ error: 'Try again later' }, { status: 429 });
+	}
+
 	try {
-		await redeemInvitation(db(), body.token, body.email, body.password);
+		const token = await registerWithInvitation(env.DB, invitation, credentials.email, credentials.password);
+		setSessionCookie(cookies, url, token);
 		return new Response(null, { status: 201 });
-	} catch {
-		return json({ error: 'Unable to register' }, { status: 400 });
+	} catch (error) {
+		if (error instanceof Error && (error.message === 'Invalid invitation' || error.message === 'Email taken')) {
+			return json({ error: error.message }, { status: 400 });
+		}
+		throw error;
 	}
 };

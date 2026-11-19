@@ -1,36 +1,59 @@
-import { afterAll, expect, test } from 'bun:test';
-import { SQL } from 'bun';
-import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import sharp from 'sharp';
-import { createItem } from '../src/lib/server/library';
-import { FileStorage } from '../src/lib/server/storage';
+import { expect, test } from 'vitest';
+import type { User } from '$lib/server/auth';
+import { updateItem } from '$lib/server/library';
+import type { Env } from '$lib/server/env';
 import { GET } from '../src/routes/api/v1/items/[id]/media/+server';
+import { createTestItem, eventFor, jpeg, png, signedBindings, unsignedEnv, user } from './fixtures';
 
-const url = process.env.TEST_DATABASE_URL;
-if (!url || !new URL(url).pathname.endsWith('_test')) throw new Error('TEST_DATABASE_URL must point to a test database');
-process.env.DATABASE_URL = url;
-const root = await mkdtemp(join(tmpdir(), 'lmacaw-media-api-'));
-process.env.MEDIA_ROOT = root;
-const sql = new SQL(url);
-const owner = randomUUID(); const other = randomUUID();
-afterAll(async () => { await sql`DELETE FROM users WHERE id IN (${owner}, ${other})`; await sql.close(); await rm(root, { recursive: true, force: true }); });
+function media(actor: User | null, id: string, query = '', bindings?: Partial<Env>) {
+	return GET(eventFor('/api/v1/items/[id]/media', `/api/v1/items/${id}/media${query}`, actor, undefined, id, bindings));
+}
 
-test('media is delivered only to authorized members', async () => {
-	await sql`INSERT INTO users (id, email, password_hash) VALUES (${owner}, ${owner + '@example.com'}, 'unused'), (${other}, ${other + '@example.com'}, 'unused')`;
-	const data = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#ffffff' } }).png().toBuffer();
-	const created = await createItem(sql, new FileStorage(root), owner, data);
-	const params = { id: created.item.id };
-	const url = new URL('https://example.test/api/v1/items/x/media');
-	const blocked = await GET({ params, url, locals: { user: { id: other } } } as never);
-	expect(blocked.status).toBe(404);
-	const allowed = await GET({ params, url, locals: { user: { id: owner } } } as never);
-	expect(allowed.status).toBe(200);
-	expect(allowed.headers.get('content-type')).toBe('image/png');
-	expect(new Uint8Array(await allowed.arrayBuffer())).toEqual(data);
-	const thumbnail = await GET({ params, url: new URL('https://example.test/api/v1/items/x/media?size=thumbnail'), locals: { user: { id: owner } } } as never);
-	expect(thumbnail.headers.get('content-type')).toBe('image/webp');
-	expect((await sharp(Buffer.from(await thumbnail.arrayBuffer())).metadata()).format).toBe('webp');
+test('checks authorization before streaming or signing media', async () => {
+	const owner = await user();
+	const other = await user();
+	const { item } = await createTestItem(owner);
+	expect((await media(null, item.id)).status).toBe(401);
+	expect((await media(other, item.id)).status).toBe(404);
+	const privateResponse = await media(other, item.id, '?size=thumbnail', signedBindings);
+	expect(privateResponse.status).toBe(404);
+	expect(privateResponse.headers.get('location')).toBeNull();
+	await updateItem(unsignedEnv, owner.id, item.id, { shared: true });
+	expect((await media(other, item.id)).status).toBe(200);
+});
+
+test('streams original and thumbnail bytes with sniffed types and download filenames', async () => {
+	const owner = await user();
+	const { item } = await createTestItem(owner, { thumbnail: new File([jpeg], 'photo.webp', { type: 'image/webp' }) });
+	const original = await media(owner, item.id, '?download=1');
+	expect(original.status).toBe(200);
+	expect(original.headers.get('content-type')).toBe('image/png');
+	expect(original.headers.get('content-disposition')).toBe(`attachment; filename="lmacaw-${item.id.slice(0, 8)}.png"`);
+	expect(original.headers.get('cache-control')).toBe('private, max-age=300');
+	expect(await original.bytes()).toEqual(png);
+
+	const thumbnail = await media(owner, item.id, '?size=thumbnail');
+	expect(thumbnail.status).toBe(200);
+	expect(thumbnail.headers.get('content-type')).toBe('image/jpeg');
+	expect(thumbnail.headers.get('content-disposition')).toBeNull();
+	expect(await thumbnail.bytes()).toEqual(jpeg);
+});
+
+test('redirects to signed URLs: thumbnails keep their stored type, downloads name the original', async () => {
+	const owner = await user();
+	const { item } = await createTestItem(owner);
+	const thumbnail = await media(owner, item.id, '?size=thumbnail', signedBindings);
+	expect(thumbnail.status).toBe(302);
+	expect(thumbnail.headers.get('cache-control')).toBe('private, max-age=300');
+	const thumbnailTarget = new URL(thumbnail.headers.get('location')!);
+	expect(thumbnailTarget.host).toBe('account.r2.cloudflarestorage.com');
+	expect(thumbnailTarget.pathname).toBe(`/media/${item.thumbnailKey}`);
+	expect(thumbnailTarget.searchParams.get('X-Amz-Signature')).toBeTruthy();
+	expect(thumbnailTarget.searchParams.get('response-content-type')).toBeNull();
+
+	const download = await media(owner, item.id, '?download=1', signedBindings);
+	const downloadTarget = new URL(download.headers.get('location')!);
+	expect(downloadTarget.pathname).toBe(`/media/${item.storageKey}`);
+	expect(downloadTarget.searchParams.get('response-content-type')).toBe('image/png');
+	expect(downloadTarget.searchParams.get('response-content-disposition')).toBe(`attachment; filename="lmacaw-${item.id.slice(0, 8)}.png"`);
 });

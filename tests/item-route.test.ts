@@ -1,28 +1,62 @@
-import { afterAll, expect, test } from 'bun:test';
-import { SQL } from 'bun';
-import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import sharp from 'sharp';
-import { createItem } from '../src/lib/server/library';
-import { FileStorage } from '../src/lib/server/storage';
-import { PATCH } from '../src/routes/api/v1/items/[id]/+server';
+import { env } from 'cloudflare:test';
+import { expect, test } from 'vitest';
+import type { User } from '$lib/server/auth';
+import { DELETE, PATCH } from '../src/routes/api/v1/items/[id]/+server';
+import { createTestItem, eventFor, user } from './fixtures';
 
-const url = process.env.TEST_DATABASE_URL;
-if (!url || !new URL(url).pathname.endsWith('_test')) throw new Error('TEST_DATABASE_URL must point to a test database');
-process.env.DATABASE_URL = url;
-const root = await mkdtemp(join(tmpdir(), 'lmacaw-item-api-')); process.env.MEDIA_ROOT = root;
-const sql = new SQL(url); const owner = randomUUID(); const other = randomUUID();
-afterAll(async () => { await sql`DELETE FROM users WHERE id IN (${owner}, ${other})`; await sql.close(); await rm(root, { recursive: true, force: true }); });
+const itemRoute = '/api/v1/items/[id]';
+function patchEvent(actor: User | null, id: string, body: unknown) {
+	return eventFor(itemRoute, `/api/v1/items/${id}`, actor, {
+		method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+	}, id);
+}
 
-test('only the owner may edit tags, description, favorite, and sharing', async () => {
-	await sql`INSERT INTO users (id, email, password_hash) VALUES (${owner}, ${owner + '@example.com'}, 'unused'), (${other}, ${other + '@example.com'}, 'unused')`;
-	const data = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#ffffff' } }).png().toBuffer();
-	const item = (await createItem(sql, new FileStorage(root), owner, data)).item;
-	const invoke = (userId: string) => { const req = new Request(`https://example.test/api/v1/items/${item.id}`, { method: 'PATCH', headers: { origin: 'https://example.test', 'content-type': 'application/json' }, body: JSON.stringify({ shared: true, favorite: true, description: 'A meme', tags: ['cat'], extractedText: 'corrected text' }) }); return PATCH({ request: req, url: new URL(req.url), params: { id: item.id }, locals: { user: { id: userId } } } as never); };
+test.each([
+	null, [], 1, { unknown: true }, { shared: 1 }, { favorite: 'true' },
+	{ description: 4 }, { description: 'd'.repeat(2001) },
+	{ extractedText: null }, { extractedText: 'x'.repeat(4001) },
+	{ tags: null }, { tags: 'cat' }, { tags: [1] }, { tags: ['  '] },
+	{ tags: ['x'.repeat(61)] }, { tags: Array(31).fill('tag') }
+].map((body) => [body]))('rejects invalid PATCH data %j', async (body) => {
+	const response = await PATCH(patchEvent(await user(), crypto.randomUUID(), body));
+	expect(response.status).toBe(400);
+	expect(await response.json()).toEqual({ error: 'Invalid request' });
+});
+
+test('checks PATCH ownership and batches text, revision and document jobs', async () => {
+	const owner = await user();
+	const other = await user();
+	const { item } = await createTestItem(owner);
+	const changes = { shared: true, favorite: true, description: 'A meme', tags: ['cat'], extractedText: 'corrected text' };
+	expect((await PATCH(patchEvent(other, item.id, changes))).status).toBe(404);
+	expect((await PATCH(patchEvent(owner, item.id, { shared: true, favorite: true }))).status).toBe(204);
+	expect((await PATCH(patchEvent(other, item.id, changes))).status).toBe(404);
+	expect(await env.DB.prepare('SELECT revision FROM items WHERE id = ?').bind(item.id).first('revision')).toBe(0);
+
+	await env.DB.batch(['pending', 'failed', 'leased'].map((state) =>
+		env.DB.prepare(`INSERT INTO ai_jobs (id, kind, item_id, owner_id, state, created_at)
+			VALUES (?, 'document', ?, ?, ?, ?)`).bind(crypto.randomUUID(), item.id, owner.id, state, Date.now())));
+	expect((await PATCH(patchEvent(owner, item.id, changes))).status).toBe(204);
+	expect(await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(item.id).first()).toMatchObject({
+		shared: 1, favorite: 1, description: 'A meme', tags: '["cat"]', ocr_override: 'corrected text', revision: 1
+	});
+	expect(await env.DB.prepare('SELECT state FROM ai_jobs WHERE item_id = ? AND kind = ? ORDER BY state')
+		.bind(item.id, 'document').all()).toMatchObject({ results: [{ state: 'leased' }, { state: 'pending' }] });
+});
+
+test('accepts maximum-length multibyte text and all 30 tags within field limits', async () => {
+	const owner = await user();
+	const { item } = await createTestItem(owner);
+	const body = { description: 'ế'.repeat(2000), extractedText: 'ế'.repeat(4000), tags: Array(30).fill('ế'.repeat(60)) };
+	expect((await PATCH(patchEvent(owner, item.id, body))).status).toBe(204);
+});
+
+test('allows only the owner to delete an item through the route', async () => {
+	const owner = await user();
+	const other = await user();
+	const { item } = await createTestItem(owner);
+	const invoke = (actor: User) => DELETE(eventFor(itemRoute, `/api/v1/items/${item.id}`, actor, { method: 'DELETE' }, item.id));
 	expect((await invoke(other)).status).toBe(404);
 	expect((await invoke(owner)).status).toBe(204);
-	const rows = await sql`SELECT shared, favorite, description, tags, ocr_override FROM items WHERE id = ${item.id}`;
-	expect(rows[0]).toMatchObject({ shared: true, favorite: true, description: 'A meme', tags: ['cat'], ocr_override: 'corrected text' });
+	expect((await invoke(owner)).status).toBe(404);
 });

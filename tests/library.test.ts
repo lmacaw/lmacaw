@@ -1,74 +1,135 @@
-import { afterAll, expect, test } from 'bun:test';
-import { SQL } from 'bun';
-import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import sharp from 'sharp';
-import { FileStorage } from '../src/lib/server/storage';
-import { createItem, getVisibleItem, setShared, saveSharedCopy, deleteItem } from '../src/lib/server/library';
+import { env } from 'cloudflare:test';
+import { beforeEach, expect, test, vi } from 'vitest';
+import { cleanupDeletedMedia, createItem, deleteItem } from '$lib/server/library';
+import { createTestItem, imageInput, png, unsignedEnv, user, webp, mediaKeys } from './fixtures';
 
-const url = process.env.TEST_DATABASE_URL;
-if (!url || !new URL(url).pathname.endsWith('_test')) throw new Error('TEST_DATABASE_URL must point to a test database');
-const sql = new SQL(url);
-const root = await mkdtemp(join(tmpdir(), 'lmacaw-library-test-'));
-const storage = new FileStorage(root);
-const owner = randomUUID();
-const member = randomUUID();
-afterAll(async () => { await sql`DELETE FROM users WHERE id IN (${owner}, ${member})`; await sql.close(); await rm(root, { recursive: true, force: true }); });
-
-test('private items are isolated and saved shared copies survive deletion', async () => {
-	await sql`INSERT INTO users (id, email, password_hash) VALUES (${owner}, ${owner + '@example.com'}, 'unused'), (${member}, ${member + '@example.com'}, 'unused')`;
-	const data = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#cd2d51' } }).png().toBuffer();
-	const metadata = { source: 'https://example.test/image', creator: 'Author', license: 'by', attribution: 'Author' };
-	const first = await createItem(sql, storage, owner, data, metadata);
-	const duplicate = await createItem(sql, storage, owner, data);
-	expect(duplicate.duplicate).toBe(true);
-	expect(duplicate.item.id).toBe(first.item.id);
-	expect(await getVisibleItem(sql, member, first.item.id)).toBeNull();
-	await setShared(sql, owner, first.item.id, true);
-	await sql`UPDATE items SET description = 'Sleeping cat', tags = ARRAY['cat'], ocr_override = 'hello' WHERE id = ${first.item.id}`;
-	expect(await getVisibleItem(sql, member, first.item.id)).not.toBeNull();
-	const copy = await saveSharedCopy(sql, storage, member, first.item.id);
-	await deleteItem(sql, storage, owner, first.item.id);
-	const saved = await getVisibleItem(sql, member, copy.item.id);
-	expect(saved).not.toBeNull();
-	expect(saved?.sourceMetadata).toEqual(metadata);
-	const copiedDetails = await sql`SELECT description, tags, ocr_override FROM items WHERE id = ${copy.item.id}`;
-	expect(copiedDetails[0]).toMatchObject({ description: 'Sleeping cat', tags: ['cat'], ocr_override: 'hello' });
-	expect(await storage.get(saved!.storageKey)).toEqual(data);
+let keysBefore: string[] = [];
+beforeEach(async () => {
+	keysBefore = await mediaKeys();
 });
 
-test('a discovered duplicate adds missing source attribution', async () => {
-	await sql`INSERT INTO users (id, email, password_hash) VALUES (${owner}, ${owner + '@example.com'}, 'unused') ON CONFLICT DO NOTHING`;
-	const data = await sharp({ create: { width: 3, height: 3, channels: 3, background: '#392451' } }).png().toBuffer();
-	await createItem(sql, storage, owner, data);
-	const metadata = { source: 'https://example.test/image', creator: 'Author', license: 'by', attribution: 'Author' };
-	const duplicate = await createItem(sql, storage, owner, data, metadata);
-	expect(duplicate.duplicate).toBe(true);
-	expect(duplicate.item.sourceMetadata).toEqual(metadata);
+test('stores the image and thumbnail, inserts the image job, and indexes the item', async () => {
+	const owner = await user();
+	const input = imageInput({ initial: { description: 'Đồ ăn', tags: ['meme'], extractedText: 'Caption' } });
+	const { item, duplicate } = await createItem(unsignedEnv, owner.id, input);
+	expect(duplicate).toBe(false);
+	expect(await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(item.id).first()).toMatchObject({
+		owner_id: owner.id, storage_key: item.storageKey, thumbnail_key: item.thumbnailKey,
+		content_hash: input.sha256, content_type: 'image/png', width: 1, height: 1, tags: '["meme"]'
+	});
+	const original = await env.MEDIA.get(item.storageKey);
+	const thumbnail = await env.MEDIA.get(item.thumbnailKey!);
+	expect(original?.httpMetadata?.contentType).toBe('image/png');
+	expect(thumbnail?.httpMetadata?.contentType).toBe('image/webp');
+	expect(await original?.bytes()).toEqual(png);
+	expect(await thumbnail?.bytes()).toEqual(webp);
+	expect(await env.DB.prepare('SELECT kind, owner_id, state FROM ai_jobs WHERE item_id = ?').bind(item.id).first())
+		.toEqual({ kind: 'image', owner_id: owner.id, state: 'pending' });
+	expect(await env.DB.prepare('SELECT * FROM item_search WHERE item_id = ?').bind(item.id).first())
+		.toMatchObject({ item_id: item.id, owner_id: owner.id, shared: 0, body: expect.stringContaining('dồ ăn meme caption') });
 });
 
-test('retains media if the database commits but the insert response is lost', async () => {
-	await sql`INSERT INTO users (id, email, password_hash) VALUES (${owner}, ${owner + '@example.com'}, 'unused') ON CONFLICT DO NOTHING`;
-	const data = await sharp({ create: { width: 9, height: 9, channels: 3, background: '#145a32' } }).png().toBuffer();
-	const unreliable = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-		const query = sql(strings, ...values);
-		return strings.join('?').includes('INSERT INTO items') ? Promise.resolve(query).then(() => { throw new Error('response lost'); }) : query;
-	}) as unknown as SQL;
-	await expect(createItem(unreliable, storage, owner, data)).rejects.toThrow('response lost');
-	const rows = await sql`SELECT storage_key, thumbnail_key FROM items WHERE owner_id = ${owner} AND width = 9`;
-	expect(rows).toHaveLength(1);
-	expect(await storage.get(rows[0].storage_key)).toEqual(data);
-	expect((await storage.get(rows[0].thumbnail_key)).length).toBeGreaterThan(0);
+test('deduplicates per owner without writing new media and fills source metadata once', async () => {
+	const owner = await user();
+	const sameHash = imageInput();
+	const first = await createItem(unsignedEnv, owner.id, sameHash);
+	const before = (await env.MEDIA.list()).objects.map((object) => object.key);
+	const source = { title: 'Sourced meme', creator: 'An' };
+	expect(await createItem(unsignedEnv, owner.id, { ...sameHash, source })).toMatchObject({
+		duplicate: true, item: { id: first.item.id, sourceMetadata: source }
+	});
+	expect(await createItem(unsignedEnv, owner.id, { ...sameHash, source: { title: 'Other' } })).toMatchObject({
+		duplicate: true, item: { id: first.item.id, sourceMetadata: source }
+	});
+	expect((await env.MEDIA.list()).objects.map((object) => object.key)).toEqual(before);
+	expect(await env.DB.prepare('SELECT count(*) AS count FROM ai_jobs WHERE item_id = ?').bind(first.item.id).first('count')).toBe(1);
+	const other = await user();
+	const second = await createItem(unsignedEnv, other.id, sameHash);
+	expect(second.duplicate).toBe(false);
+	expect(second.item.storageKey).not.toBe(first.item.storageKey);
 });
 
-test('thumbnails follow EXIF orientation from phone photos', async () => {
-	// A landscape 40x20 sensor image tagged "rotate 90°" displays as portrait 20x40.
-	const photo = await sharp({ create: { width: 40, height: 20, channels: 3, background: '#2d6acd' } }).jpeg().withMetadata({ orientation: 6 }).toBuffer();
-	const { item } = await createItem(sql, storage, owner, photo);
-	expect({ width: item.width, height: item.height }).toEqual({ width: 20, height: 40 });
-	if (!item.thumbnailKey) throw new Error('Missing thumbnail');
-	const thumbnail = await sharp(await storage.get(item.thumbnailKey)).metadata();
-	expect(thumbnail.width! < thumbnail.height!).toBe(true);
+test('rejects a PDF named .png without writing media', async () => {
+	const owner = await user();
+	const original = new File(['%PDF-1.7'], 'fake.png', { type: 'image/png' });
+	await expect(createTestItem(owner, { original })).rejects.toThrow('Unsupported image format');
+	expect(await mediaKeys()).toEqual(keysBefore);
+});
+
+test('rejects a PNG thumbnail without writing media', async () => {
+	const owner = await user();
+	const thumbnail = new File([png], 'fake.webp', { type: 'image/webp' });
+	await expect(createTestItem(owner, { thumbnail })).rejects.toThrow('Invalid thumbnail');
+	expect(await mediaKeys()).toEqual(keysBefore);
+});
+
+test.each([
+	{ width: 0 }, { width: 20_001 }, { height: 0 }, { height: 20_001 }, { width: 1.5 }
+])('rejects out-of-range original dimensions %j', async (dimensions) => {
+	const owner = await user();
+	await expect(createTestItem(owner, dimensions)).rejects.toThrow('Invalid dimensions');
+	expect(await mediaKeys()).toEqual(keysBefore);
+});
+
+test('rejects a thumbnail with a side above 768 pixels', async () => {
+	const owner = await user();
+	const oversized = webp.slice();
+	new DataView(oversized.buffer).setUint16(26, 769, true);
+	await expect(createTestItem(owner, { thumbnail: new File([oversized], 'wide.webp') }))
+		.rejects.toThrow('Invalid thumbnail');
+	expect(await mediaKeys()).toEqual(keysBefore);
+});
+
+test('cleans both uploaded objects when the D1 insert rolls back', async () => {
+	const missingOwner = crypto.randomUUID();
+	await expect(createItem(unsignedEnv, missingOwner, imageInput())).rejects.toThrow();
+	expect(await mediaKeys()).toEqual(keysBefore);
+});
+
+test('preserves media when D1 commits and then loses the batch response', async () => {
+	const owner = await user();
+	const db = {
+		prepare: env.DB.prepare.bind(env.DB),
+		batch: async (statements: Parameters<typeof env.DB.batch>[0]) => {
+			await env.DB.batch(statements);
+			throw new Error('Lost batch response');
+		}
+	} as unknown as typeof env.DB;
+	const { item, duplicate } = await createItem({ ...unsignedEnv, DB: db }, owner.id, imageInput());
+	expect(duplicate).toBe(false);
+	expect(await env.MEDIA.head(item.storageKey)).not.toBeNull();
+	expect(await env.MEDIA.head(item.thumbnailKey!)).not.toBeNull();
+});
+
+test('deletes the row, FTS entry and both media objects', async () => {
+	const owner = await user();
+	const { item } = await createTestItem(owner);
+	await deleteItem(unsignedEnv, owner.id, item.id);
+	expect(await env.DB.prepare('SELECT id FROM items WHERE id = ?').bind(item.id).first()).toBeNull();
+	expect(await env.DB.prepare('SELECT item_id FROM item_search WHERE item_id = ?').bind(item.id).first()).toBeNull();
+	expect(await env.MEDIA.head(item.storageKey)).toBeNull();
+	expect(await env.MEDIA.head(item.thumbnailKey!)).toBeNull();
+	expect(await env.DB.prepare('SELECT storage_key FROM media_deletions').all()).toMatchObject({ results: [] });
+});
+
+test('queues media whose deletion failed and removes it on retry', async () => {
+	const owner = await user();
+	const { item } = await createTestItem(owner);
+	const media = {
+		delete: vi.fn(async (key: string) => {
+			if (key === item.storageKey) throw new Error('R2 unavailable');
+			await env.MEDIA.delete(key);
+		})
+	} as unknown as typeof env.MEDIA;
+	await deleteItem({ ...unsignedEnv, MEDIA: media }, owner.id, item.id);
+
+	expect(await env.DB.prepare('SELECT id FROM items WHERE id = ?').bind(item.id).first()).toBeNull();
+	expect(await env.DB.prepare('SELECT storage_key FROM media_deletions').all())
+		.toMatchObject({ results: [{ storage_key: item.storageKey }] });
+	expect(await env.MEDIA.head(item.storageKey)).not.toBeNull();
+	expect(await env.MEDIA.head(item.thumbnailKey!)).toBeNull();
+
+	await cleanupDeletedMedia(unsignedEnv);
+	expect(await env.MEDIA.head(item.storageKey)).toBeNull();
+	expect(await env.DB.prepare('SELECT storage_key FROM media_deletions').all()).toMatchObject({ results: [] });
 });

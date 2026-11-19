@@ -5,14 +5,21 @@
 	import DetailDialog from '$lib/components/DetailDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import type { Collection, Discovery, Item, Scope } from '$lib/types';
+	import { fetchAndUpload, uploadFile } from '$lib/upload';
 
 	let { data } = $props();
 	const user = $derived(data.user);
+	const publicMode = $derived(data.mode === 'public');
+	const publicLibrary = $derived(publicMode && !data.isAdmin);
+	const showLibrary = $derived(publicMode || Boolean(user));
 
 	let email = $state(''), password = $state(''), ready = $state(false);
+	let emailInput = $state<HTMLInputElement>(undefined!);
+	let signInPending = $state(false), signInSent = $state(false);
 	let message = $state(''), messageDownload = $state<Item | null>(null), messageTimer: ReturnType<typeof setTimeout> | undefined;
 	let canCopy = $state(true), menuButton: HTMLButtonElement = $state(undefined!);
-	let scope = $state<Scope>('library'), selectedCollection = $state(''), query = $state('');
+	let selectedScope = $state<Scope>('library'), selectedCollection = $state(''), query = $state('');
+	const scope = $derived<Scope>(publicLibrary ? 'shared' : selectedScope);
 	let theme = $state<'system' | 'light' | 'dark'>('system'), menuOpen = $state(false), dragging = $state(false);
 	let items: Item[] = $state([]), loaded = $state(false), hasMore = $state(false), currentPage = 1, semanticAvailable = $state(false);
 	let discoveries: Discovery[] = $state([]), discovering = $state(false);
@@ -68,19 +75,38 @@
 	}
 	function select(next: Scope, collection = '') {
 		closeMenu();
-		scope = next; selectedCollection = collection; query = ''; discoveries = [];
+		selectedScope = next; selectedCollection = collection; query = ''; discoveries = [];
 		items = []; loaded = false; void refresh();
 	}
 
-	// Sessions: reload the whole page on sign-in and sign-out, so no private state or in-flight
-	// response from one account can survive into another.
 	async function signIn(event: SubmitEvent) {
-		event.preventDefault(); message = '';
+		event.preventDefault();
+		if (signInPending) return;
+		const setup = data.needsSetup;
+		signInPending = true; signInSent = false; message = '';
 		try {
-			const response = await api('/api/v1/session', 'POST', { email, password });
-			if (!response.ok) { message = response.status === 429 ? 'Too many attempts. Try again later.' : response.status === 403 ? 'Sign-in is not allowed from this address. Open Lmacaw at its main address, or add this one to ORIGIN.' : 'Unable to sign in.'; return; }
-			password = ''; window.location.assign('/');
+			const response = await api(setup ? '/api/v1/setup' : '/api/v1/session', 'POST', { email, password });
+			if (setup ? response.status === 201 || response.status === 409 : response.status === 204) {
+				location.reload();
+				return;
+			}
+			if (response.status === 403) message = setup ? 'Use the administrator email set in ADMIN_EMAIL.' : originMessage;
+			else if (response.status === 401) message = 'Wrong email or password.';
+			else if (response.status === 429) message = 'Too many attempts. Try again later.';
+			else message = setup ? 'Unable to set up Lmacaw.' : 'Unable to sign in.';
 		} catch { message = 'Unable to connect.'; }
+		finally { signInPending = false; }
+	}
+	const originMessage = 'Sign-in is not allowed from this address. Open Lmacaw at its main address, or add this one to ORIGIN.';
+	async function requestSignInLink() {
+		if (signInPending || !emailInput.reportValidity()) return;
+		signInPending = true; signInSent = false; message = '';
+		try {
+			const response = await api('/api/v1/session/link', 'POST', { email });
+			if (response.status !== 202) { message = response.status === 429 ? 'Too many attempts. Try again later.' : response.status === 403 ? originMessage : 'Unable to sign in.'; return; }
+			signInSent = true;
+		} catch { message = 'Unable to connect.'; }
+		finally { signInPending = false; }
 	}
 	async function signOut() {
 		await fetch('/api/v1/session', { method: 'DELETE' }).catch(() => {});
@@ -96,9 +122,8 @@
 		const list = Array.from(files);
 		let added = 0, duplicates = 0, failed: string[] = [];
 		for (const file of list) {
-			const body = new FormData(); body.set('file', file);
 			try {
-				const response = await fetch('/api/v1/items', { method: 'POST', body });
+				const response = await uploadFile(file);
 				if (!response.ok) failed.push(file.name);
 				else if ((await response.json()).duplicate) duplicates++;
 				else added++;
@@ -193,8 +218,8 @@
 		finally { discovering = false; }
 	}
 	async function saveDiscovery(item: Discovery) {
-		const response = await api('/api/v1/discover/save', 'POST', { id: item.id });
-		notify(response.ok ? 'Saved to your library.' : 'Could not save image.');
+		const response = await fetchAndUpload({ openverse: item.id }).catch(() => null);
+		notify(response?.ok ? 'Saved to your library.' : 'Could not save image.');
 	}
 
 	function openForm(kind: 'url' | 'collection' | 'rename') {
@@ -212,7 +237,7 @@
 				const failed: string[] = []; let added = 0, duplicates = 0;
 				for (const [index, url] of urls.entries()) {
 					form.progress = `Importing ${index + 1} of ${urls.length}…`;
-					const attempt = () => api('/api/v1/import', 'POST', { url }).catch(() => null);
+					const attempt = () => fetchAndUpload({ url }).catch(() => null);
 					let response = await attempt();
 					if (!response?.ok) response = await attempt(); // one retry: remote hosts fail now and then
 					if (!response?.ok) { failed.push(url); continue; }
@@ -254,8 +279,10 @@
 		// Missing on older browsers and on plain-HTTP origins other than localhost.
 		canCopy = window.isSecureContext && typeof ClipboardItem === 'function' && typeof navigator.clipboard?.write === 'function';
 		try { const saved = localStorage.getItem('lmacaw-theme'); if (saved === 'light' || saved === 'dark') setTheme(saved); } catch { /* storage unavailable */ }
-		if (!user) return;
-		void refresh(); void refreshCollections();
+		if (!showLibrary) return;
+		void refresh();
+		if (publicLibrary) return;
+		void refreshCollections();
 		const paste = (event: ClipboardEvent) => {
 			const target = event.target;
 			if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable)) return;
@@ -267,44 +294,52 @@
 	});
 </script>
 
-<svelte:head><title>{user ? `${title} · Lmacaw` : 'Lmacaw'}</title></svelte:head>
+<svelte:head><title>{user && !publicLibrary ? `${title} · Lmacaw` : 'Lmacaw'}</title></svelte:head>
 
-{#if !user}
+{#if !showLibrary}
 	<main class="auth-shell">
 		<div class="auth-card">
 			<div class="brand"><img class="brand-mark" src="/favicon.svg" alt="" width="24" height="24" /><span>Lmacaw</span></div>
-			<h1>Sign in</h1>
-			<form onsubmit={signIn}>
+			<h1>{data.needsSetup ? 'Set up Lmacaw' : 'Sign in'}</h1>
+			<form method="post" onsubmit={signIn}>
 				<label class="field-label" for="email">Email</label>
-				<input id="email" class="input" type="email" autocomplete="username" bind:value={email} required />
+				<input id="email" class="input" type="email" autocomplete="email" bind:this={emailInput} bind:value={email} required />
 				<label class="field-label" for="password">Password</label>
-				<input id="password" class="input" type="password" autocomplete="current-password" bind:value={password} required />
-				<button class="button primary" type="submit" disabled={!ready}>Sign in</button>
+				<input id="password" class="input" type="password" autocomplete={data.needsSetup ? 'new-password' : 'current-password'}
+					minlength={data.needsSetup ? 12 : undefined} maxlength="1024" aria-describedby={data.needsSetup ? 'password-hint' : undefined} bind:value={password} required />
+				{#if data.needsSetup}<p id="password-hint" class="hint">At least 12 characters</p>{/if}
+				<button class="button primary" type="submit" disabled={!ready || signInPending}>{data.needsSetup ? 'Set up' : 'Sign in'}</button>
+				{#if !data.needsSetup && data.mailEnabled}
+					<button class="text-button auth-secondary" type="button" disabled={!ready || signInPending} onclick={requestSignInLink}>Email me a sign-in link</button>
+				{/if}
 			</form>
 			{#if message}<p class="error" role="alert">{message}</p>{/if}
-			<details class="forgot">
-				<summary>Forgot password?</summary>
-				<p class="hint">Ask whoever runs this Lmacaw server to reset it. On the server: <code>EMAIL=… NEW_PASSWORD=… bun run reset-password</code>.</p>
-			</details>
+			{#if signInSent}<p class="notice" role="status">Check your email for a sign-in link.</p>{/if}
 		</div>
 	</main>
 {:else}
 	<div
-		class="app-shell" role="presentation"
-		ondragover={(event) => { event.preventDefault(); if (event.dataTransfer?.types.includes('Files')) dragging = true; }}
-		ondragleave={(event) => { if (!event.relatedTarget) dragging = false; }}
-		ondrop={(event) => { event.preventDefault(); dragging = false; if (event.dataTransfer?.files.length) void addFiles(event.dataTransfer.files); }}
+		class="app-shell" class:public-library={publicLibrary} role="presentation"
+		ondragover={publicLibrary ? undefined : (event) => { event.preventDefault(); if (event.dataTransfer?.types.includes('Files')) dragging = true; }}
+		ondragleave={publicLibrary ? undefined : (event) => { if (!event.relatedTarget) dragging = false; }}
+		ondrop={publicLibrary ? undefined : (event) => { event.preventDefault(); dragging = false; if (event.dataTransfer?.files.length) void addFiles(event.dataTransfer.files); }}
 	>
-		<Sidebar
-			{scope} {selectedCollection} {collections} {theme} {invitationLink} open={menuOpen}
-			email={user.email} isAdmin={user.isAdmin}
-			onselect={select} onnewcollection={() => openForm('collection')} oninvite={invite}
-			ontheme={setTheme} onsignout={signOut} onclose={closeMenu}
-		/>
+		{#if !publicLibrary && user}
+			<Sidebar
+				{scope} {selectedCollection} {collections} {theme} {invitationLink} open={menuOpen}
+				email={user.email} canInvite={data.isAdmin && !publicMode} {publicMode}
+				onselect={select} onnewcollection={() => openForm('collection')} oninvite={invite}
+				ontheme={setTheme} onsignout={signOut} onclose={closeMenu}
+			/>
+		{/if}
 		<main class="workspace" inert={menuOpen}>
 			<header class="topbar">
-				<button class="icon-button menu-button" aria-label="Menu" aria-expanded={menuOpen} bind:this={menuButton} onclick={() => (menuOpen = true)}><Icon name="menu" /></button>
-				<h1>{title}</h1>
+				{#if publicLibrary}
+					<h1 class="brand"><img class="brand-mark" src="/favicon.svg" alt="" width="24" height="24" />Lmacaw</h1>
+				{:else}
+					<button class="icon-button menu-button" aria-label="Menu" aria-expanded={menuOpen} bind:this={menuButton} onclick={() => (menuOpen = true)}><Icon name="menu" /></button>
+					<h1>{title}</h1>
+				{/if}
 				{#if scope === 'collection'}
 					<button class="icon-button" aria-label="Rename collection" title="Rename" onclick={() => openForm('rename')}><Icon name="pencil" size={16} /></button>
 					<button class="icon-button" aria-label="Delete collection" title="Delete collection" onclick={deleteCollection}><Icon name="trash" size={16} /></button>
@@ -314,10 +349,12 @@
 					<label class="sr-only" for="search">Search</label>
 					<input id="search" type="search" placeholder={scope === 'discover' ? 'Search Openverse' : 'Search'} bind:value={query} oninput={queueSearch} onkeydown={(event) => { if (event.key === 'Enter' && scope === 'discover') void discover(); }} />
 				</div>
-				<button class="button ghost hide-small" onclick={() => openForm('url')}>Add URL</button>
-				<button class="icon-button show-small" aria-label="Add URL" onclick={() => openForm('url')}><Icon name="link" /></button>
-				<button class="button primary" disabled={!ready} onclick={() => fileInput.click()}>Add</button>
-				{#if ready}<input hidden bind:this={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onchange={(event) => { if (event.currentTarget.files) void addFiles(event.currentTarget.files); event.currentTarget.value = ''; }} />{/if}
+				{#if !publicLibrary}
+					<button class="button ghost hide-small" onclick={() => openForm('url')}>Add URL</button>
+					<button class="icon-button show-small" aria-label="Add URL" onclick={() => openForm('url')}><Icon name="link" /></button>
+					<button class="button primary" disabled={!ready} onclick={() => fileInput.click()}>Add</button>
+					{#if ready}<input hidden bind:this={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onchange={(event) => { if (event.currentTarget.files) void addFiles(event.currentTarget.files); event.currentTarget.value = ''; }} />{/if}
+				{/if}
 			</header>
 
 			{#if query && scope !== 'discover' && loaded && !semanticAvailable}<p class="subtle-bar">Keyword results only. Semantic search is unavailable.</p>{/if}
@@ -339,7 +376,7 @@
 					<div class="empty"><p>{discovering ? 'Searching…' : 'Search openly licensed images on Openverse.'}</p><p class="hint">Results may include few memes. Check each license at its source.</p></div>
 				{/if}
 			{:else if items.length}
-				<Gallery {items} {canCopy} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} />
+				<Gallery {items} {canCopy} {publicLibrary} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} />
 				{#if hasMore}<div class="more"><button class="button ghost" onclick={() => refresh(currentPage + 1)}>Load more</button></div>{/if}
 			{:else if loaded}
 				<div class="empty">
@@ -351,16 +388,16 @@
 			{/if}
 		</main>
 		{#if dragging}<div class="drop-overlay" aria-hidden="true">Drop to add</div>{/if}
-		{#if message && !current}<p class="toast" role="status">{message}{#if messageDownload} <a href={`/api/v1/items/${messageDownload.id}/media`} download>Download</a>{/if}</p>{/if}
+		{#if message && !current}<p class="toast" role="status">{message}{#if messageDownload} <a href={`/api/v1/items/${messageDownload.id}/media?download=1`} download>Download</a>{/if}</p>{/if}
 	</div>
 
 	<DetailDialog
-		item={current} {canCopy} readonly={scope === 'shared'} collections={itemCollections} message={current ? message : ''} aiEnabled={data.aiEnabled}
+		item={current} {canCopy} {publicLibrary} readonly={scope === 'shared'} collections={itemCollections} message={current ? message : ''} aiEnabled={data.aiEnabled}
 		onclose={() => (current = null)} oncopy={copyImage} onupdate={updateItem} ondelete={removeItem}
 		onsave={saveShared} onretry={retryAi} ontogglecollection={toggleCollection}
 	/>
 
-	<dialog bind:this={formDialog} class="form-dialog" aria-labelledby="form-title">
+	{#if !publicLibrary}<dialog bind:this={formDialog} class="form-dialog" aria-labelledby="form-title">
 		<form onsubmit={submitForm}>
 			<h2 id="form-title">{form.kind === 'url' ? 'Add URL' : form.kind === 'collection' ? 'New collection' : 'Rename collection'}</h2>
 			{#if form.kind === 'url'}
@@ -378,5 +415,5 @@
 				<button class="button primary" type="submit" disabled={Boolean(form.progress)}>{form.progress || (form.kind === 'url' ? 'Import' : form.kind === 'collection' ? 'Create' : 'Rename')}</button>
 			</div>
 		</form>
-	</dialog>
+	</dialog>{/if}
 {/if}

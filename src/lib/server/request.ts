@@ -1,43 +1,75 @@
-import { createHash } from 'node:crypto';
-import type { SQL } from 'bun';
+import type { D1Database } from '@cloudflare/workers-types';
+import { json } from '@sveltejs/kit';
+import type { User } from './auth';
+import { now, one } from './db';
+import { authMode, type Env } from './env';
 
 export async function readJson(request: Request, limit = 4096): Promise<unknown> {
 	const reader = request.body?.getReader();
 	if (!reader) throw new Error('Missing body');
-	const chunks: Uint8Array[] = [];
+
+	const chunks: BlobPart[] = [];
 	let size = 0;
 	for (;;) {
 		const { value, done } = await reader.read();
 		if (done) break;
 		size += value.byteLength;
-		if (size > limit) { await reader.cancel(); throw new Error('Body too large'); }
+		if (size > limit) {
+			await reader.cancel();
+			throw new Error('Body too large');
+		}
 		chunks.push(value);
 	}
-	return JSON.parse(await new Blob(chunks as BlobPart[]).text());
+	return JSON.parse(await new Blob(chunks).text());
 }
 
-export async function allowAttempt(sql: SQL, purpose: string, address: string): Promise<boolean> {
-	const client = createHash('sha256').update(`${purpose}:${address}`).digest('hex');
-	const rows = await sql`INSERT INTO login_attempts (client_hash, attempts, window_start) VALUES (${client}, 1, now())
-		ON CONFLICT (client_hash) DO UPDATE SET
-		attempts = CASE WHEN login_attempts.window_start < now() - interval '1 minute' THEN 1 ELSE login_attempts.attempts + 1 END,
-		window_start = CASE WHEN login_attempts.window_start < now() - interval '1 minute' THEN now() ELSE login_attempts.window_start END
-		RETURNING attempts`;
-	return rows[0].attempts <= 10;
-}
-
-// A browser request is trusted when it comes from one of the ORIGIN addresses (scripts/serve.ts
-// keeps the full comma-separated list in LMACAW_ORIGINS) or from url.origin itself.
-// Requests without an Origin header (same-origin GETs, the worker, scripts) pass.
-export function trustedOrigin(request: Request, url: URL, origins = process.env.LMACAW_ORIGINS ?? ''): boolean {
+export function trustedOrigin(request: Request, url: URL, origins: string): boolean {
 	const origin = request.headers.get('origin');
-	if (!origin || origin === url.origin) return true;
-	return origins.split(',').includes(origin);
+	return origin === null || origin === url.origin || origins.split(',').some((entry) => {
+		const allowed = entry.trim();
+		return allowed !== '' && allowed === origin;
+	});
 }
 
-// With ADDRESS_HEADER set for a reverse proxy, adapter-node throws when a request arrives without
-// that header, as it does when a browser reaches the port directly on the LAN. Those requests
-// share one rate-limit bucket instead of failing with a 500.
-export function clientAddress(getClientAddress: () => string): string {
-	try { return getClientAddress(); } catch { return 'direct'; }
+export function clientAddress(request: Request): string {
+	return request.headers.get('CF-Connecting-IP') || 'direct';
+}
+
+export async function allowAttempt(db: D1Database, key: string, limit = 10, windowMs = 60_000): Promise<boolean> {
+	const timestamp = now();
+	const cutoff = timestamp - windowMs;
+	const row = await one<{ attempts: number }>(db, `
+		INSERT INTO rate_limits (key, attempts, window_start) VALUES (?, 1, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			attempts = CASE WHEN window_start < ? THEN 1 ELSE attempts + 1 END,
+			window_start = CASE WHEN window_start < ? THEN excluded.window_start ELSE window_start END
+		RETURNING attempts
+	`, key, timestamp, cutoff, cutoff);
+	return row !== null && row.attempts <= limit;
+}
+
+/**
+ * Who may call a route, named by the password-mode role and mapped onto the current mode:
+ * - 'anon':   public mode, anyone; password mode, a signed-in member.
+ * - 'member': public mode, an admin (there are no members); password mode, a signed-in member.
+ * - 'admin':  an admin in both modes (public: a valid Access token on ADMIN_HOST, set by the hook).
+ */
+export type Role = 'anon' | 'member' | 'admin';
+
+type RoleEvent = { locals: App.Locals; platform?: App.Platform };
+
+/**
+ * Returns the caller (null for an anonymous caller where that is allowed), or a JSON error Response to
+ * return as is. A missing caller gets 401 in password mode, where signing in helps, and 403 in public
+ * mode, where it cannot.
+ */
+export function requireRole(event: RoleEvent, role: Role, env: Pick<Env, 'AUTH_MODE'>): User | null | Response {
+	const user = event.locals.user;
+	const mode = authMode(env);
+	if (mode === 'public' && role === 'anon') return user;
+	if (!user) return mode === 'public'
+		? json({ error: 'Forbidden' }, { status: 403 })
+		: json({ error: 'Unauthorized' }, { status: 401 });
+	if ((role === 'admin' || mode === 'public') && !user.isAdmin) return json({ error: 'Forbidden' }, { status: 403 });
+	return user;
 }

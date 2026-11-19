@@ -1,35 +1,83 @@
-import { afterAll, expect, test } from 'bun:test';
-import { SQL } from 'bun';
-import { randomUUID } from 'node:crypto';
-import { createCollection, addToCollection, deleteCollection, listCollections, removeFromCollection, renameCollection } from '../src/lib/server/collections';
+import { env } from 'cloudflare:test';
+import { beforeEach, expect, test } from 'vitest';
+import { addToCollection, createCollection, deleteCollection, listCollections, removeFromCollection, renameCollection } from '$lib/server/collections';
 
-const url = process.env.TEST_DATABASE_URL;
-if (!url || !new URL(url).pathname.endsWith('_test')) throw new Error('TEST_DATABASE_URL must point to a test database');
-const sql = new SQL(url); const owner = randomUUID(); const other = randomUUID(); const item = randomUUID();
-afterAll(async () => { await sql`DELETE FROM users WHERE id IN (${owner}, ${other})`; await sql.close(); });
+const db = env.DB;
+let owner: string;
+let other: string;
+let item: string;
 
-test('collections and their items are private to their owner', async () => {
-	await sql`INSERT INTO users (id, email, password_hash) VALUES (${owner}, ${owner + '@example.com'}, 'unused'), (${other}, ${other + '@example.com'}, 'unused')`;
-	await sql`INSERT INTO items (id, owner_id, content_hash, storage_key, content_type, width, height) VALUES (${item}, ${owner}, 'hash', ${'a'.repeat(64)}, 'image/png', 1, 1)`;
-	const collection = await createCollection(sql, owner, 'Cats');
-	await addToCollection(sql, owner, collection.id, item);
-	expect((await listCollections(sql, owner)).map((entry) => entry.name)).toEqual(['Cats']);
-	expect(await listCollections(sql, other)).toEqual([]);
-	await expect(addToCollection(sql, other, collection.id, item)).rejects.toThrow();
-	await expect(removeFromCollection(sql, other, collection.id, item)).rejects.toThrow();
-	await removeFromCollection(sql, owner, collection.id, item);
-	expect(await sql`SELECT item_id FROM collection_items WHERE collection_id = ${collection.id}`).toHaveLength(0);
+beforeEach(async () => {
+	owner = crypto.randomUUID();
+	other = crypto.randomUUID();
+	item = crypto.randomUUID();
+	await db.prepare('INSERT INTO users (id, email, created_at) VALUES (?, ?, 0), (?, ?, 0)')
+		.bind(owner, `${owner}@example.com`, other, `${other}@example.com`).run();
 });
 
-test('owners can rename and delete collections without deleting items', async () => {
-	const collection = await createCollection(sql, owner, 'Dogs');
-	await addToCollection(sql, owner, collection.id, item);
-	expect((await listCollections(sql, owner, item)).find((entry) => entry.id === collection.id)?.hasItem).toBe(true);
-	await expect(renameCollection(sql, other, collection.id, 'Mine')).rejects.toThrow();
-	await renameCollection(sql, owner, collection.id, 'Good dogs');
-	expect((await listCollections(sql, owner)).map((entry) => entry.name)).toContain('Good dogs');
-	await expect(deleteCollection(sql, other, collection.id)).rejects.toThrow();
-	await deleteCollection(sql, owner, collection.id);
-	expect((await listCollections(sql, owner)).map((entry) => entry.id)).not.toContain(collection.id);
-	expect(await sql`SELECT id FROM items WHERE id = ${item}`).toHaveLength(1);
+async function insertItem(id: string, ownerId: string, shared = 0) {
+	await db.prepare(`
+		INSERT INTO items (id, owner_id, content_hash, storage_key, content_type, width, height, shared, created_at)
+		VALUES (?, ?, ?, ?, 'image/png', 1, 1, ?, 0)
+	`).bind(id, ownerId, id, id, shared).run();
+}
+
+test('lists only the owner’s collections in case-insensitive name order with optional membership', async () => {
+	await insertItem(item, owner);
+	const cats = await createCollection(db, owner, ' Cats ');
+	const dogs = await createCollection(db, owner, 'dogs');
+	const birds = await createCollection(db, owner, 'birds');
+	const otherCats = await createCollection(db, other, 'Cats');
+	await addToCollection(db, owner, cats.id, item);
+
+	expect(cats.name).toBe('Cats');
+	expect(await listCollections(db, owner)).toEqual([birds, cats, dogs]);
+	expect(await listCollections(db, owner, item)).toEqual([
+		{ ...birds, hasItem: false }, { ...cats, hasItem: true }, { ...dogs, hasItem: false }
+	]);
+	expect(await listCollections(db, other, item)).toEqual([{ ...otherCats, hasItem: false }]);
+	await expect(addToCollection(db, other, cats.id, item)).rejects.toThrow('Collection or item not found');
+	await expect(removeFromCollection(db, other, cats.id, item)).rejects.toThrow('Collection or item not found');
+
+	await removeFromCollection(db, owner, cats.id, item);
+	expect(await db.prepare('SELECT item_id FROM collection_items WHERE collection_id = ?').bind(cats.id).first()).toBeNull();
+	await expect(removeFromCollection(db, owner, cats.id, item)).rejects.toThrow('Collection or item not found');
+});
+
+test('allows shared items and idempotent adds while rejecting missing or private items', async () => {
+	const shared = crypto.randomUUID();
+	await insertItem(item, other);
+	await insertItem(shared, other, 1);
+	const collection = await createCollection(db, owner, 'Cats');
+
+	await expect(addToCollection(db, owner, collection.id, item)).rejects.toThrow('Collection or item not found');
+	await expect(addToCollection(db, owner, collection.id, crypto.randomUUID())).rejects.toThrow('Collection or item not found');
+	await addToCollection(db, owner, collection.id, shared);
+	await addToCollection(db, owner, collection.id, shared);
+	const rows = await db.prepare('SELECT item_id FROM collection_items WHERE collection_id = ?').bind(collection.id).all();
+	expect(rows.results).toEqual([{ item_id: shared }]);
+
+	await db.prepare('UPDATE items SET shared = 0 WHERE id = ?').bind(shared).run();
+	await expect(addToCollection(db, owner, collection.id, shared)).rejects.toThrow('Collection or item not found');
+	await removeFromCollection(db, owner, collection.id, shared);
+});
+
+test('only owners can rename and delete collections, and deletion preserves items', async () => {
+	await insertItem(item, owner);
+	const collection = await createCollection(db, owner, 'Dogs');
+	await addToCollection(db, owner, collection.id, item);
+	await expect(renameCollection(db, other, collection.id, 'Mine')).rejects.toThrow('Collection not found');
+	await renameCollection(db, owner, collection.id, ' Good dogs ');
+	expect(await listCollections(db, owner, item)).toEqual([{ ...collection, name: 'Good dogs', hasItem: true }]);
+	await expect(deleteCollection(db, other, collection.id)).rejects.toThrow('Collection not found');
+	await deleteCollection(db, owner, collection.id);
+	expect(await listCollections(db, owner)).toEqual([]);
+	expect(await db.prepare('SELECT id FROM items WHERE id = ?').bind(item).first()).toEqual({ id: item });
+	expect(await db.prepare('SELECT item_id FROM collection_items WHERE collection_id = ?').bind(collection.id).first()).toBeNull();
+});
+
+test.each(['', '   ', 'a'.repeat(81)])('validates collection names (%j)', async (name) => {
+	await expect(createCollection(db, owner, name)).rejects.toThrow('Invalid collection name');
+	const collection = await createCollection(db, owner, 'a'.repeat(80));
+	await expect(renameCollection(db, owner, collection.id, name)).rejects.toThrow('Invalid collection name');
 });

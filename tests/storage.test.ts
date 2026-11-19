@@ -1,41 +1,66 @@
-import { afterAll, expect, test } from 'bun:test';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { FileStorage, S3Storage } from '../src/lib/server/storage';
-import { PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { env } from 'cloudflare:test';
+import { expect, test } from 'vitest';
+import { mediaUrl } from '$lib/server/media-url';
+import { copyObject, deleteObject, headBytes, newKey, putObject, validateKey } from '$lib/server/storage';
 
-const root = await mkdtemp(join(tmpdir(), 'lmacaw-storage-test-'));
-afterAll(async () => { await rm(root, { recursive: true, force: true }); });
-
-test('writes, reads and deletes a file', async () => {
-	const storage = new FileStorage(root);
-	const key = 'a'.repeat(64);
-	await storage.put(key, new TextEncoder().encode('test'));
-	expect(new TextDecoder().decode(await storage.get(key))).toBe('test');
-	const listed = []; for await (const entry of storage.list()) listed.push(entry.key);
-	expect(listed).toEqual([key]);
-	await storage.delete(key);
-	await expect(storage.get(key)).rejects.toThrow();
+test('stores, reads, copies, and deletes R2 objects', async () => {
+	const originalKey = newKey();
+	const copyKey = newKey();
+	const bytes = new TextEncoder().encode('storage round trip');
+	await putObject(env.MEDIA, originalKey, bytes, 'image/png');
+	expect(Array.from(await headBytes(env.MEDIA, originalKey, 6))).toEqual(Array.from(bytes.slice(0, 6)));
+	await copyObject(env.MEDIA, originalKey, copyKey);
+	const original = await env.MEDIA.get(originalKey);
+	const copy = await env.MEDIA.get(copyKey);
+	expect(await original?.text()).toBe('storage round trip');
+	expect(await copy?.text()).toBe('storage round trip');
+	expect(copy?.httpMetadata?.contentType).toBe('image/png');
+	await deleteObject(env.MEDIA, originalKey);
+	expect(await env.MEDIA.get(originalKey)).toBeNull();
+	await deleteObject(env.MEDIA, copyKey);
 });
 
-test('rejects paths outside the storage directory', async () => {
-	const storage = new FileStorage(root);
-	await expect(storage.put('../outside', new Uint8Array())).rejects.toThrow();
-	await expect(storage.get('../outside')).rejects.toThrow();
-	await expect(storage.delete('../outside')).rejects.toThrow();
+test('generates unique lowercase hex keys and rejects invalid keys', () => {
+	const first = newKey();
+	const second = newKey();
+	expect(first).toMatch(/^[a-f0-9]{64}$/);
+	expect(second).not.toBe(first);
+	expect(() => validateKey('../x')).toThrow('Invalid storage key');
+	expect(() => validateKey('A'.repeat(64))).toThrow('Invalid storage key');
 });
 
-test('S3 storage writes, reads, and deletes the configured object', async () => {
-	const commands: unknown[] = [];
-	const client = { send: async (command: unknown) => { commands.push(command); return { Body: { transformToByteArray: async () => Uint8Array.from([1, 2]) } }; } };
-	const storage = new S3Storage(client as never, 'private-bucket');
-	const key = 'b'.repeat(64);
-	await storage.put(key, Uint8Array.from([1, 2]));
-	expect(await storage.get(key)).toEqual(Uint8Array.from([1, 2]));
-	await storage.delete(key);
-	expect(commands[0]).toBeInstanceOf(PutObjectCommand);
-	expect(commands[1]).toBeInstanceOf(GetObjectCommand);
-	expect(commands[2]).toBeInstanceOf(DeleteObjectCommand);
-	expect((commands[0] as PutObjectCommand).input).toMatchObject({ Bucket: 'private-bucket', Key: key });
+test('validates put keys before writing', async () => {
+	await expect(putObject(env.MEDIA, '../x', new Uint8Array([1]), 'image/png')).rejects.toThrow('Invalid storage key');
+});
+
+test('presigns media only when R2 credentials are configured', async () => {
+	const key = newKey();
+	for (const missing of ['R2_ACCOUNT_ID', 'R2_BUCKET', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'] as const) {
+		const incomplete = { ...env, R2_ACCOUNT_ID: 'acc', R2_BUCKET: 'b', R2_ACCESS_KEY_ID: 'id', R2_SECRET_ACCESS_KEY: 'secret', [missing]: undefined };
+		expect(await mediaUrl(incomplete, key, 'image/png')).toBeNull();
+	}
+
+	const signed = await mediaUrl({
+		...env,
+		R2_ACCOUNT_ID: 'acc',
+		R2_BUCKET: 'b',
+		R2_ACCESS_KEY_ID: 'id',
+		R2_SECRET_ACCESS_KEY: 'secret'
+	}, key, 'image/png', 'a"b.png');
+	expect(signed).not.toBeNull();
+	const url = new URL(signed!);
+	expect(url.host).toBe('acc.r2.cloudflarestorage.com');
+	expect(url.pathname).toBe(`/b/${key}`);
+	expect(url.searchParams.get('X-Amz-Signature')).toBeTruthy();
+	expect(url.searchParams.get('X-Amz-Expires')).toBe('600');
+	expect(url.searchParams.get('response-content-type')).toBe('image/png');
+	expect(url.searchParams.get('response-content-disposition')).toBe('attachment; filename="ab.png"');
+});
+
+test('stores a stream of declared length and rejects a wrong length', async () => {
+	const key = newKey();
+	const stream = () => new Blob([new Uint8Array([1, 2, 3, 4])]).stream();
+	await putObject(env.MEDIA, key, stream(), 'image/png', 4);
+	expect(await headBytes(env.MEDIA, key, 4)).toEqual(new Uint8Array([1, 2, 3, 4]));
+	await expect(putObject(env.MEDIA, newKey(), stream(), 'image/png', 9)).rejects.toThrow();
 });

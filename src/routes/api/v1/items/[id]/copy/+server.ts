@@ -1,18 +1,24 @@
 import { json } from '@sveltejs/kit';
+import { getEnv } from '$lib/server/env';
+import { getItemDto, saveSharedCopy, validItemId } from '$lib/server/library';
+import { requireRole, trustedOrigin } from '$lib/server/request';
 import type { RequestHandler } from './$types';
-import { trustedOrigin } from '../../../../../../lib/server/request';
-import { db } from '../../../../../../lib/server/db';
-import { saveSharedCopy } from '../../../../../../lib/server/library';
-import { storageFromEnv } from '../../../../../../lib/server/storage';
 
-export const POST: RequestHandler = async ({ locals, request, url, params }) => {
-	if (!locals.user) return json({ error: 'Unauthorized' }, { status: 401 });
-	if (!trustedOrigin(request, url)) return json({ error: 'Forbidden' }, { status: 403 });
-	if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(params.id)) return new Response(null, { status: 404 });
+export const POST: RequestHandler = async (event) => {
+	const { request, url, params, platform } = event;
+	const env = getEnv(platform);
+	if (!trustedOrigin(request, url, env.ORIGIN)) return json({ error: 'Forbidden' }, { status: 403 });
+	const caller = requireRole(event, 'member', env);
+	if (caller instanceof Response) return caller;
+	if (!validItemId(params.id)) return new Response(null, { status: 404 });
+
 	try {
-		const result = await saveSharedCopy(db(), storageFromEnv(), locals.user.id, params.id);
-		const { storageKey: _storageKey, thumbnailKey: _thumbnailKey, ...item } = result.item;
-		return json({ item, duplicate: result.duplicate }, { status: result.duplicate ? 200 : 201 });
+		const { item, duplicate } = await saveSharedCopy(env, caller!.id, params.id.toLowerCase());
+		const dto = await getItemDto(env, caller!.id, item.id);
+		if (!dto) return new Response(null, { status: 404 });
+		return json({ item: dto, duplicate }, {
+			status: duplicate ? 200 : 201, headers: { 'cache-control': 'private, no-store' }
+		});
 	} catch (error) {
 		if (error instanceof Error && error.message === 'Item not found') return new Response(null, { status: 404 });
 		throw error;

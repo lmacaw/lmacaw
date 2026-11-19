@@ -53,9 +53,7 @@ R2 presigned URLs are optional. Without `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, and
 ## Self-hosting
 
 Docker self-hosting is paused while it is rebuilt on this codebase, with SQLite and filesystem or S3
-storage in place of D1 and R2. `Dockerfile`, `docker-compose.yml`, and `render.yaml` still describe
-the previous PostgreSQL app and do not build this one.
+storage in place of D1 and R2.
 
 The previous app, with PostgreSQL, Docker Compose, and the Ollama AI worker, is kept on the
-`legacy/postgres` branch and the `postgres-final` tag. Use them for an existing Docker install until
-self-hosting returns.
+`legacy/postgres` branch and the `postgres-final` tag. Use them for an existing Docker install until self-hosting returns.

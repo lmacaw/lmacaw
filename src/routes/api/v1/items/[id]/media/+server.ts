@@ -1,5 +1,5 @@
 import { getEnv } from '$lib/server/env';
-import { getVisibleItem, validItemId } from '$lib/server/library';
+import { getVisibleItem, libraryOwner, validItemId } from '$lib/server/library';
 import { mediaUrl } from '$lib/server/media-url';
 import { requireRole } from '$lib/server/request';
 import type { RequestHandler } from './$types';
@@ -14,7 +14,7 @@ export const GET: RequestHandler = async (event) => {
 	const caller = requireRole(event, 'anon', env);
 	if (caller instanceof Response) return caller;
 	if (!validItemId(params.id)) return new Response(null, { status: 404 });
-	const item = await getVisibleItem(env.DB, caller?.id ?? null, params.id.toLowerCase());
+	const item = await getVisibleItem(env.DB, caller ? libraryOwner(env, caller) : undefined, params.id.toLowerCase());
 	if (!item) return new Response(null, { status: 404 });
 
 	const thumbnail = url.searchParams.get('size') === 'thumbnail' && item.thumbnailKey !== null;

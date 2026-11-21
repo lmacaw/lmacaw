@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { getEnv } from '$lib/server/env';
-import { deleteItem, isItemPatch, updateItem, validItemId } from '$lib/server/library';
+import { deleteItem, isItemPatch, libraryOwner, updateItem, validItemId } from '$lib/server/library';
 import { readJson, requireRole, trustedOrigin } from '$lib/server/request';
 import type { RequestHandler } from './$types';
 
@@ -21,7 +21,7 @@ export const PATCH: RequestHandler = async (event) => {
 	if (!isItemPatch(body)) return json({ error: 'Invalid request' }, { status: 400 });
 
 	try {
-		await updateItem(env, caller!.id, params.id.toLowerCase(), body);
+		await updateItem(env, libraryOwner(env, caller!), params.id.toLowerCase(), body);
 	} catch (error) {
 		if (error instanceof Error && error.message === 'Item not found') return new Response(null, { status: 404 });
 		throw error;
@@ -38,7 +38,7 @@ export const DELETE: RequestHandler = async (event) => {
 	if (!validItemId(params.id)) return new Response(null, { status: 404 });
 
 	try {
-		await deleteItem(env, caller!.id, params.id.toLowerCase());
+		await deleteItem(env, libraryOwner(env, caller!), params.id.toLowerCase());
 	} catch (error) {
 		if (error instanceof Error && error.message === 'Item not found') return new Response(null, { status: 404 });
 		throw error;

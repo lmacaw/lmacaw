@@ -2,7 +2,7 @@ import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
 import type { Item, SourceMetadata as ClientSourceMetadata } from '$lib/types';
 import type { User } from './auth';
 import { many, now, one, run } from './db';
-import type { Env } from './env';
+import { authMode, type Env } from './env';
 import { isThumbnailType, sniffImageType } from './media-validation';
 import { ftsQuery, indexItem } from './search';
 import { copyObject, deleteObject, newKey, putObject } from './storage';
@@ -77,12 +77,21 @@ function mapRow(row: ItemRecord): ItemRow {
 	};
 }
 
-function mapDto(userId: string | null, row: ItemWithAnalysis): ItemDto {
+/**
+ * Whose items a signed-in caller manages: their own in password mode, and every owner's (null) in
+ * public mode, where the maintainers look after one shared library.
+ */
+export function libraryOwner(env: Pick<Env, 'AUTH_MODE'>, user: User): string | null {
+	return authMode(env) === 'public' && user.isAdmin ? null : user.id;
+}
+
+/** `owner` is from libraryOwner, or undefined for an anonymous caller, who never sees favorites. */
+function mapDto(owner: string | null | undefined, row: ItemWithAnalysis): ItemDto {
 	return {
 		id: row.id,
 		content_type: row.content_type,
 		shared: Boolean(row.shared),
-		favorite: row.owner_id === userId && Boolean(row.favorite),
+		favorite: owner !== undefined && (owner === null || row.owner_id === owner) && Boolean(row.favorite),
 		description: row.description,
 		tags: JSON.parse(row.tags),
 		source_metadata: row.source_metadata === null ? null : JSON.parse(row.source_metadata),
@@ -101,13 +110,17 @@ const itemWithAnalysis = `
 	FROM items i LEFT JOIN item_analysis a ON a.item_id = i.id
 `;
 
-export async function getItemDto(env: Env, userId: string, id: string): Promise<ItemDto | null> {
-	const row = await one<ItemWithAnalysis>(env.DB, `${itemWithAnalysis} WHERE i.id = ? AND i.owner_id = ?`, id, userId);
-	return row && mapDto(userId, row);
+export async function getItemDto(env: Env, owner: string | null, id: string): Promise<ItemDto | null> {
+	const row = await one<ItemWithAnalysis>(env.DB,
+		`${itemWithAnalysis} WHERE i.id = ? AND i.owner_id = coalesce(?, i.owner_id)`, id, owner);
+	return row && mapDto(owner, row);
 }
 
-export async function getVisibleItem(db: D1Database, userId: string | null, id: string): Promise<ItemRow | null> {
-	const row = await one<ItemRecord>(db, 'SELECT * FROM items WHERE id = ? AND (owner_id = ? OR shared = 1)', id, userId);
+/** Shared items, plus the caller's library; `owner` is from libraryOwner, or undefined when anonymous. */
+export async function getVisibleItem(db: D1Database, owner: string | null | undefined, id: string): Promise<ItemRow | null> {
+	const row = owner === undefined
+		? await one<ItemRecord>(db, 'SELECT * FROM items WHERE id = ? AND shared = 1', id)
+		: await one<ItemRecord>(db, 'SELECT * FROM items WHERE id = ? AND (shared = 1 OR owner_id = coalesce(?, owner_id))', id, owner);
 	return row && mapRow(row);
 }
 
@@ -115,12 +128,15 @@ export async function listItems(env: Env, user: User | null, { scope, collection
 	Promise<{ items: ItemDto[]; hasMore: boolean }> {
 	const filters: string[] = [];
 	const params: (string | number)[] = [];
+	const owner = user === null ? undefined : libraryOwner(env, user);
 
 	if (user === null || scope === 'shared') {
 		filters.push('i.shared = 1');
 	} else {
-		filters.push('i.owner_id = ?');
-		params.push(user.id);
+		if (owner) {
+			filters.push('i.owner_id = ?');
+			params.push(owner);
+		}
 		if (scope === 'favorites') filters.push('i.favorite = 1');
 		if (collection) {
 			filters.push(`EXISTS (
@@ -140,9 +156,9 @@ export async function listItems(env: Env, user: User | null, { scope, collection
 
 	const rows = await many<ItemWithAnalysis>(env.DB, `
 		${itemWithAnalysis} ${searchJoin}
-		WHERE ${filters.join(' AND ')} ORDER BY i.created_at DESC, i.id DESC LIMIT ? OFFSET ?
+		WHERE ${filters.join(' AND ') || '1 = 1'} ORDER BY i.created_at DESC, i.id DESC LIMIT ? OFFSET ?
 	`, ...params, pageSize + 1, (page - 1) * pageSize);
-	const items = rows.slice(0, pageSize).map((row) => mapDto(user?.id ?? null, row));
+	const items = rows.slice(0, pageSize).map((row) => mapDto(owner, row));
 	return { items, hasMore: rows.length > pageSize };
 }
 
@@ -305,7 +321,8 @@ export async function createItem(env: Env, ownerId: string, input: NewItem): Pro
 		});
 }
 
-export async function updateItem(env: Env, ownerId: string, id: string, patch: ItemPatch): Promise<void> {
+/** `ownerId` is from libraryOwner: null updates the item whoever owns it. */
+export async function updateItem(env: Env, ownerId: string | null, id: string, patch: ItemPatch): Promise<void> {
 	if (!isItemPatch(patch)) throw new InvalidItemError('Invalid request');
 	const db = env.DB;
 	const { description, tags, extractedText, favorite, shared } = patch;
@@ -315,7 +332,7 @@ export async function updateItem(env: Env, ownerId: string, id: string, patch: I
 			UPDATE items SET description = coalesce(?, description), tags = coalesce(?, tags),
 				ocr_override = coalesce(?, ocr_override), favorite = coalesce(?, favorite),
 				shared = coalesce(?, shared), revision = revision + ?
-			WHERE id = ? AND owner_id = ?
+			WHERE id = ? AND owner_id = coalesce(?, owner_id)
 			RETURNING id
 		`).bind(description ?? null, tags === undefined ? null : JSON.stringify(tags), extractedText ?? null,
 			favorite === undefined ? null : Number(favorite), shared === undefined ? null : Number(shared),
@@ -323,14 +340,14 @@ export async function updateItem(env: Env, ownerId: string, id: string, patch: I
 	];
 	if (textChanged) {
 		statements.push(
-			db.prepare(`DELETE FROM ai_jobs WHERE item_id = ? AND owner_id = ?
+			db.prepare(`DELETE FROM ai_jobs WHERE item_id = ? AND owner_id = coalesce(?, owner_id)
 				AND kind = 'document' AND state IN ('pending', 'failed')`).bind(id, ownerId),
 			db.prepare(`INSERT INTO ai_jobs (id, kind, item_id, owner_id, created_at)
-				SELECT ?, 'document', id, owner_id, ? FROM items WHERE id = ? AND owner_id = ?`)
+				SELECT ?, 'document', id, owner_id, ? FROM items WHERE id = ? AND owner_id = coalesce(?, owner_id)`)
 				.bind(crypto.randomUUID(), now(), id, ownerId)
 		);
 	}
-	if (textChanged || shared !== undefined) statements.push(...indexItem(db, id, ownerId));
+	if (textChanged || shared !== undefined) statements.push(...indexItem(db, id, ownerId ?? undefined));
 	const [updated] = await db.batch(statements);
 	if (!updated.results.length) throw new Error('Item not found');
 	// Milestone C synchronizes Vectorize when shared changes.
@@ -370,19 +387,20 @@ export async function cleanupDeletedMedia(env: Env, limit = 50): Promise<void> {
 	for (const { storage_key } of keys) await cleanMediaKey(env.DB, env.MEDIA, storage_key);
 }
 
-export async function deleteItem(env: Env, ownerId: string, id: string): Promise<void> {
+/** `ownerId` is from libraryOwner: null deletes the item whoever owns it. */
+export async function deleteItem(env: Env, ownerId: string | null, id: string): Promise<void> {
 	const db = env.DB;
 	const [, , deleted] = await db.batch<Pick<ItemRecord, 'storage_key' | 'thumbnail_key'>>([
 		db.prepare(`
 			INSERT INTO media_deletions (storage_key, created_at)
-			SELECT storage_key, ? FROM items WHERE id = ? AND owner_id = ?
+			SELECT storage_key, ? FROM items WHERE id = ? AND owner_id = coalesce(?, owner_id)
 			UNION ALL
-			SELECT thumbnail_key, ? FROM items WHERE id = ? AND owner_id = ? AND thumbnail_key IS NOT NULL
+			SELECT thumbnail_key, ? FROM items WHERE id = ? AND owner_id = coalesce(?, owner_id) AND thumbnail_key IS NOT NULL
 			ON CONFLICT(storage_key) DO NOTHING
 		`).bind(now(), id, ownerId, now(), id, ownerId),
-		db.prepare('DELETE FROM item_search WHERE item_id IN (SELECT id FROM items WHERE id = ? AND owner_id = ?)')
+		db.prepare('DELETE FROM item_search WHERE item_id IN (SELECT id FROM items WHERE id = ? AND owner_id = coalesce(?, owner_id))')
 			.bind(id, ownerId),
-		db.prepare('DELETE FROM items WHERE id = ? AND owner_id = ? RETURNING storage_key, thumbnail_key')
+		db.prepare('DELETE FROM items WHERE id = ? AND owner_id = coalesce(?, owner_id) RETURNING storage_key, thumbnail_key')
 			.bind(id, ownerId)
 	]);
 	const row = deleted.results[0];

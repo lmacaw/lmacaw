@@ -1,12 +1,12 @@
 import { expect, test } from 'vitest';
 import type { User } from '$lib/server/auth';
-import { listItems, updateItem } from '$lib/server/library';
+import { getItemDto, listItems, updateItem } from '$lib/server/library';
 import type { Item } from '$lib/types';
 import { GET as list, POST as upload } from '../src/routes/api/v1/items/+server';
-import { PATCH as patch } from '../src/routes/api/v1/items/[id]/+server';
+import { DELETE as remove, PATCH as patch } from '../src/routes/api/v1/items/[id]/+server';
 import { GET as media } from '../src/routes/api/v1/items/[id]/media/+server';
 import {
-	createTestItem, listEvent, memberRouteCases, png, publicBindings, publicEventFor, unsignedEnv,
+	createTestItem, itemsRoute, listEvent, memberRouteCases, png, publicBindings, publicEventFor, unsignedEnv,
 	uploadEvent, uploadForm, user
 } from './fixtures';
 
@@ -79,4 +79,22 @@ test('requires an admin to upload, shares new uploads, and preserves visibility 
 	const duplicate = await upload(await uploadEvent(admin, form, publicBindings));
 	expect(duplicate.status).toBe(200);
 	expect(await duplicate.json()).toMatchObject({ duplicate: true, item: { id: item.id, shared: false } });
+});
+
+test('lets every admin see and manage items another admin uploaded (#29)', async () => {
+	const first = await user(true);
+	const second = await user(true);
+	const { item } = await createTestItem(first, { initial: { description: 'Takedown me', tags: [], extractedText: null } });
+	const itemEvent = (init?: RequestInit) =>
+		publicEventFor('/api/v1/items/[id]', `/api/v1/items/${item.id}`, second, init, item.id);
+
+	const library = await list(publicEventFor(itemsRoute, `${itemsRoute}?scope=library`, second));
+	expect((await library.json()).items.map(({ id }: Item) => id)).toContain(item.id);
+
+	const viewed = await media(publicEventFor('/api/v1/items/[id]/media', `/api/v1/items/${item.id}/media`, second, undefined, item.id));
+	expect(viewed.status).toBe(200);
+
+	expect((await patch(itemEvent({ method: 'PATCH', body: JSON.stringify({ shared: true }) }))).status).toBe(204);
+	expect((await remove(itemEvent({ method: 'DELETE' }))).status).toBe(204);
+	expect(await getItemDto(unsignedEnv, first.id, item.id)).toBeNull();
 });

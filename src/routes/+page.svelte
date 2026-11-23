@@ -4,6 +4,7 @@
 	import Gallery from '$lib/components/Gallery.svelte';
 	import DetailDialog from '$lib/components/DetailDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 	import type { Collection, Discovery, Item, Scope } from '$lib/types';
 	import { fetchAndUpload, uploadFile } from '$lib/upload';
 
@@ -293,7 +294,9 @@
 		ready = true;
 		// Missing on older browsers and on plain-HTTP origins other than localhost.
 		canCopy = window.isSecureContext && typeof ClipboardItem === 'function' && typeof navigator.clipboard?.write === 'function';
-		try { const saved = localStorage.getItem('lmacaw-theme'); if (saved === 'light' || saved === 'dark') setTheme(saved); } catch { /* storage unavailable */ }
+		// app.html already applied the saved theme; sync the toggle with it.
+		const saved = document.documentElement.dataset.theme;
+		if (saved === 'light' || saved === 'dark') theme = saved;
 		if (!showLibrary) return;
 		void refresh();
 		if (publicLibrary) return;
@@ -369,6 +372,9 @@
 					<button class="icon-button show-small" aria-label="Add URL" onclick={() => openForm('url')}><Icon name="link" /></button>
 					<button class="button primary" disabled={!ready} onclick={() => fileInput.click()}>Add</button>
 					{#if ready}<input hidden bind:this={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onchange={(event) => { if (event.currentTarget.files) void addFiles(event.currentTarget.files); event.currentTarget.value = ''; }} />{/if}
+				{:else}
+					<!-- Public visitors have no sidebar, so the appearance toggle lives here. -->
+					<ThemeToggle {theme} ontheme={setTheme} disabled={!ready} />
 				{/if}
 			</header>
 

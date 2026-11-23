@@ -217,9 +217,19 @@
 		} catch { notify('Openverse is unavailable. Try again later.'); }
 		finally { discovering = false; }
 	}
+	let savingDiscovery: string[] = $state([]);
 	async function saveDiscovery(item: Discovery) {
-		const response = await fetchAndUpload({ openverse: item.id }).catch(() => null);
-		notify(response?.ok ? 'Saved to your library.' : 'Could not save image.');
+		if (item.saved || savingDiscovery.includes(item.id)) return;
+		savingDiscovery.push(item.id);
+		try {
+			const response = await fetchAndUpload({ openverse: item.id }).catch(() => null);
+			if (!response?.ok) { notify('Could not save image.'); return; }
+			const target = discoveries.find((candidate) => candidate.id === item.id);
+			if (target) target.saved = true;
+			notify((await response.json().catch(() => ({}))).duplicate ? 'Already in your library.' : 'Saved to your library.');
+		} finally {
+			savingDiscovery = savingDiscovery.filter((id) => id !== item.id);
+		}
 	}
 
 	function openForm(kind: 'url' | 'collection' | 'rename') {
@@ -367,7 +377,7 @@
 								<img src={`https://api.openverse.org/v1/images/${item.id}/thumb/`} alt={item.title || 'Openverse image'} loading="lazy" referrerpolicy="no-referrer" />
 								<div class="discover-overlay">
 									<span class="discover-credit">{item.attribution || item.title}</span>
-									<button class="tile-action labeled" aria-label={`Save ${item.title || 'image'}`} onclick={() => saveDiscovery(item)}><Icon name="bookmark" size={14} />Save</button>
+									<button class="tile-action labeled" aria-label={`${item.saved ? 'Saved' : 'Save'} ${item.title || 'image'}`} disabled={item.saved || savingDiscovery.includes(item.id)} onclick={() => saveDiscovery(item)}><Icon name="bookmark" size={14} />{item.saved ? 'Saved' : savingDiscovery.includes(item.id) ? 'Saving…' : 'Save'}</button>
 								</div>
 							</li>
 						{/each}

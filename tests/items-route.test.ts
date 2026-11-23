@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test';
 import { beforeEach, expect, test, vi } from 'vitest';
 import { GET, POST } from '../src/routes/api/v1/items/+server';
+import { createCollection } from '$lib/server/collections';
 import { eventFor, imageInput, itemsRoute, jpeg, listEvent, png, signedBindings, uploadEvent, uploadForm, user, mediaKeys } from './fixtures';
 
 let keysBefore: string[] = [];
@@ -34,6 +35,36 @@ test('accepts multipart uploads, returns a public DTO and reuses a duplicate', a
 	expect(list.headers.get('cache-control')).toBe('private, no-store');
 	// Lists carry no presigned URLs: they would expire while the page stays open.
 	expect(await list.json()).toEqual({ items: [payload.item], semanticAvailable: false, hasMore: false });
+});
+
+test('adds new and duplicate uploads to the open collection, and rejects a foreign one before writing (#27)', async () => {
+	const owner = await user();
+	const other = await user();
+	const cats = await createCollection(env.DB, owner.id, 'Cats');
+	const foreign = await createCollection(env.DB, other.id, 'Private');
+	const input = imageInput();
+	const inCollection = (collection: string) => {
+		const form = uploadForm(input);
+		form.set('collection', collection);
+		return form;
+	};
+
+	const invalid = await POST(await uploadEvent(owner, inCollection('invalid')));
+	expect(invalid.status).toBe(400);
+	expect(await invalid.json()).toEqual({ error: 'Invalid collection' });
+	expect((await POST(await uploadEvent(owner, inCollection(foreign.id)))).status).toBe(404);
+	expect(await mediaKeys()).toEqual(keysBefore);
+
+	const created = await POST(await uploadEvent(owner, inCollection(cats.id.toUpperCase())));
+	expect(created.status).toBe(201);
+	const { item } = await created.json();
+	const listed = async () => (await (await GET(listEvent(owner, `?collection=${cats.id}`))).json()).items.map(({ id }: { id: string }) => id);
+	expect(await listed()).toEqual([item.id]);
+
+	await env.DB.prepare('DELETE FROM collection_items WHERE collection_id = ?').bind(cats.id).run();
+	const duplicate = await POST(await uploadEvent(owner, inCollection(cats.id)));
+	expect(duplicate.status).toBe(200);
+	expect(await listed()).toEqual([item.id]);
 });
 
 test.each([

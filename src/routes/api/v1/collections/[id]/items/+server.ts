@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import { addToCollection, isUuid, removeFromCollection } from '$lib/server/collections';
 import { getEnv } from '$lib/server/env';
+import { libraryOwner } from '$lib/server/library';
 import { readJson, requireRole, trustedOrigin } from '$lib/server/request';
 import type { RequestHandler } from './$types';
 
@@ -23,7 +24,7 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	try {
-		await addToCollection(env.DB, caller!.id, params.id.toLowerCase(), body.itemId.toLowerCase());
+		await addToCollection(env.DB, caller!.id, params.id.toLowerCase(), body.itemId.toLowerCase(), libraryOwner(env, caller!));
 		return new Response(null, { status: 204 });
 	} catch (error) {
 		if (error instanceof Error && error.message === 'Collection or item not found') return new Response(null, { status: 404 });

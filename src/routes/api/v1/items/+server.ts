@@ -1,6 +1,8 @@
 import { json } from '@sveltejs/kit';
 import { authMode, getEnv } from '$lib/server/env';
-import { createItem, getItemDto, InvalidItemError, listItems, validItemId, type SourceMetadata } from '$lib/server/library';
+import { addToCollection } from '$lib/server/collections';
+import { one } from '$lib/server/db';
+import { createItem, getItemDto, InvalidItemError, libraryOwner, listItems, validItemId, type SourceMetadata } from '$lib/server/library';
 import { getOpenverseImage } from '$lib/server/openverse';
 import { requireRole, trustedOrigin } from '$lib/server/request';
 import type { RequestHandler } from './$types';
@@ -63,6 +65,16 @@ export const POST: RequestHandler = async (event) => {
 		return json({ error: 'Invalid dimensions' }, { status: 400 });
 	}
 
+	// The collection open in the app, if any: checked before anything is written.
+	const collection = form.get('collection');
+	if (collection !== null && (typeof collection !== 'string' || !validItemId(collection))) {
+		return json({ error: 'Invalid collection' }, { status: 400 });
+	}
+	const collectionId = collection?.toLowerCase();
+	if (collectionId && !await one(env.DB, 'SELECT 1 FROM collections WHERE id = ? AND owner_id = ?', collectionId, caller!.id)) {
+		return new Response(null, { status: 404 });
+	}
+
 	let source: SourceMetadata | null = null;
 	const openverse = form.get('openverse');
 	if (openverse !== null) {
@@ -84,6 +96,8 @@ export const POST: RequestHandler = async (event) => {
 			original, thumbnail, sha256, width: Number(width), height: Number(height), source,
 			shared: authMode(env) === 'public'
 		});
+		// Duplicates too, so re-adding an image from a collection puts it there.
+		if (collectionId) await addToCollection(env.DB, caller!.id, collectionId, item.id, libraryOwner(env, caller!));
 		const dto = await getItemDto(env, caller!.id, item.id);
 		if (!dto) return new Response(null, { status: 404 });
 		return json({ item: dto, duplicate }, {

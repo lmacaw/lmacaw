@@ -40,6 +40,7 @@ for (const colorScheme of ['light', 'dark'] as const) {
 			await audit(page, `empty library ${tag}`);
 			const image = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#4c70b4' } }).png().toBuffer();
 			await page.locator('input[type=file]').setInputFiles({ name: 'axe.png', mimeType: 'image/png', buffer: image });
+			await page.getByRole('button', { name: /^Add \d+$/ }).click();
 			await expect(page.locator('[data-meme-tile]')).toHaveCount(1);
 			if (width < 720) await page.getByRole('button', { name: 'Menu', exact: true }).click();
 			await page.getByRole('button', { name: 'New collection' }).click();
@@ -64,11 +65,11 @@ for (const colorScheme of ['light', 'dark'] as const) {
 			await audit(page, `detail ${tag}`);
 			await page.getByRole('button', { name: 'Close', exact: true }).click();
 
-			await page.getByRole('button', { name: 'Add URL' }).click();
-			await expect(page.getByRole('dialog', { name: 'Add URL' })).toBeVisible();
+			await page.getByRole('button', { name: 'Add', exact: true }).click();
+			await expect(page.getByRole('dialog', { name: 'Add images' })).toBeVisible();
 			await audit(page, `URL dialog ${tag}`);
 			await page.getByLabel('Image URL').fill('http://127.0.0.1/private');
-			await page.getByRole('button', { name: 'Import', exact: true }).click();
+			await page.getByRole('button', { name: 'Preview', exact: true }).click();
 			await expect(page.getByRole('alert')).toBeVisible();
 			await audit(page, `URL dialog error ${tag}`);
 			await page.getByRole('button', { name: 'Cancel' }).click();
@@ -100,6 +101,7 @@ test('controls are at least 44 px on a touch screen', async ({ browser, browserN
 	expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
 	const image = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#70b44c' } }).png().toBuffer();
 	await page.locator('input[type=file]').setInputFiles({ name: 'touch.png', mimeType: 'image/png', buffer: image });
+	await page.getByRole('button', { name: /^Add \d+$/ }).click();
 	await expect(page.locator('[data-meme-tile]')).toHaveCount(1);
 	const small = () => page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('button, a[href], input, select, textarea, label.check'))
 		.filter((element) => element.checkVisibility() && !element.closest('.check') && !element.closest('.source-links') && element.getAttribute('type') !== 'file')

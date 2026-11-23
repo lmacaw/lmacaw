@@ -70,6 +70,7 @@ test('a member can sign in, upload, and view a meme', async ({ page, browserName
 	await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
 	const image = await sharp({ create: { width: 4, height: 4, channels: 3, background: '#b44c70' } }).png().toBuffer();
 	await page.locator('input[type=file]').setInputFiles({ name: 'meme.png', mimeType: 'image/png', buffer: image });
+	await page.getByRole('button', { name: /^Add \d+$/ }).click();
 	await expect(page.locator('[data-meme-tile]')).toHaveCount(1);
 	await page.locator('[data-meme-tile]').first().click();
 	await expect(page.getByRole('dialog')).toBeVisible();
@@ -83,6 +84,7 @@ test('a member can sign in, upload, and view a meme', async ({ page, browserName
 	await page.getByRole('heading', { name: 'Library' }).click();
 	await page.evaluate(() => (window as { written?: Promise<void> }).written);
 	await page.keyboard.press('ControlOrMeta+V');
+	await page.getByRole('button', { name: /^Add \d+$/ }).click();
 	await expect(page.locator('[data-meme-tile]')).toHaveCount(2);
 	await page.locator('[data-meme-tile]').first().hover();
 	await expect(page.getByRole('button', { name: 'Favorite meme' }).first()).toBeVisible();
@@ -110,10 +112,10 @@ test('a member can sign in, upload, and view a meme', async ({ page, browserName
 	page.once('dialog', (prompt) => prompt.accept());
 	await page.getByRole('button', { name: 'Delete', exact: true }).click();
 	await expect(page.locator('[data-meme-tile]')).toHaveCount(1);
-	await page.getByRole('button', { name: 'Add URL' }).click();
+	await page.getByRole('button', { name: 'Add', exact: true }).click();
 	await page.getByLabel('Image URL').fill('http://127.0.0.1/private');
-	await page.getByRole('button', { name: 'Import', exact: true }).click();
-	await expect(page.getByRole('alert')).toContainText('could not be imported');
+	await page.getByRole('button', { name: 'Preview', exact: true }).click();
+	await expect(page.getByRole('alert')).toContainText('could not be loaded');
 	await page.getByRole('button', { name: 'Cancel' }).click();
 	await page.route('**/api/v1/discover?q=cat', (route) => route.fulfill({ json: { items: [{ id: '067e6162-3b6f-4ae2-a171-2470b63dff00', title: 'Cat', thumbnail: '', attribution: 'Cat by A' }] } }));
 	await page.route('**/api/v1/discover/save', (route) => route.fulfill({ status: 201, json: { duplicate: false } }));
@@ -137,6 +139,7 @@ test('unfavoriting inside Favorites keeps the open detail populated', async ({ p
 	await signIn(page);
 	const image = await sharp({ create: { width: 4, height: 4, channels: 3, background: '#7a3fa0' } }).png().toBuffer();
 	await page.locator('input[type=file]').setInputFiles({ name: 'fav.png', mimeType: 'image/png', buffer: image });
+	await page.getByRole('button', { name: /^Add \d+$/ }).click();
 	await expect(page.locator('[data-meme-tile]')).toHaveCount(1);
 	await page.locator('[data-meme-tile]').first().hover();
 	await page.getByRole('button', { name: 'Favorite meme' }).click();
@@ -155,6 +158,7 @@ test('collections can be renamed and deleted without losing memes', async ({ pag
 	await signIn(page);
 	const image = await sharp({ create: { width: 4, height: 4, channels: 3, background: '#3fa07a' } }).png().toBuffer();
 	await page.locator('input[type=file]').setInputFiles({ name: 'keep.png', mimeType: 'image/png', buffer: image });
+	await page.getByRole('button', { name: /^Add \d+$/ }).click();
 	await page.getByRole('button', { name: 'New collection' }).click();
 	await page.getByLabel('Collection name').fill('Dogs');
 	await page.getByRole('button', { name: 'Create', exact: true }).click();
@@ -172,9 +176,9 @@ test('collections can be renamed and deleted without losing memes', async ({ pag
 
 test('Add URL takes one link per line and keeps the ones that fail', async ({ page }) => {
 	await signIn(page);
-	await page.getByRole('button', { name: 'Add URL' }).click();
+	await page.getByRole('button', { name: 'Add', exact: true }).click();
 	await page.getByLabel('Image URLs').fill('http://127.0.0.1/one.png\n\n  http://127.0.0.1/two.png  \nhttp://127.0.0.1/one.png');
-	await page.getByRole('button', { name: 'Import', exact: true }).click();
-	await expect(page.getByRole('alert')).toHaveText(/2 links could not be imported/);
+	await page.getByRole('button', { name: 'Preview', exact: true }).click();
+	await expect(page.getByRole('alert')).toHaveText(/2 links could not be loaded/);
 	await expect(page.getByLabel('Image URLs')).toHaveValue('http://127.0.0.1/one.png\nhttp://127.0.0.1/two.png');
 });

@@ -116,7 +116,8 @@ textarea.input { resize: vertical; }
 .tile-actions { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px; opacity: 0; transition: opacity .15s; }
 .tile:hover .tile-actions, .tile:focus-within .tile-actions { opacity: 1; }
 .tile-action { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 32px; height: 32px; padding: 0 8px; border: 0; border-radius: 8px; background: rgb(20 20 22 / .62); color: #fff; backdrop-filter: blur(8px); transition: background-color .12s; }
-.tile-action:hover { background: rgb(20 20 22 / .85); }
+.tile-action:hover:not(:disabled) { background: rgb(20 20 22 / .85); }
+.tile-action:disabled { cursor: default; }
 .tile-action.labeled { font-size: 12.5px; font-weight: 550; }
 .tile-badge { position: absolute; left: 7px; bottom: 7px; color: #fff; filter: drop-shadow(0 1px 2px rgb(0 0 0 / .5)); }
 .discover-overlay { position: absolute; inset: auto 0 0 0; display: flex; align-items: end; justify-content: space-between; gap: 8px; padding: 24px 8px 8px; background: linear-gradient(to top, rgb(0 0 0 / .6), transparent); color: #fff; opacity: 0; transition: opacity .15s; }

@@ -421,3 +421,12 @@ export async function deleteItem(env: Env, ownerId: string | null, id: string): 
 		row.thumbnail_key && cleanMediaKey(db, env.MEDIA, row.thumbnail_key)
 	]);
 }
+
+// Openverse landing URLs among `sources` that the owner already saved (see source_metadata.source).
+export async function savedSources(env: Env, ownerId: string, sources: string[]): Promise<Set<string>> {
+	const rows = await many<{ source: string }>(env.DB, `
+		SELECT json_extract(source_metadata, '$.source') AS source FROM items
+		WHERE owner_id = ? AND json_extract(source_metadata, '$.source') IN (SELECT value FROM json_each(?))
+	`, ownerId, JSON.stringify(sources.filter(Boolean)));
+	return new Set(rows.map((row) => row.source));
+}

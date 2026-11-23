@@ -48,20 +48,21 @@ export async function deleteCollection(db: D1Database, ownerId: string, collecti
 	if (!row) throw new Error('Collection not found');
 }
 
-export async function addToCollection(db: D1Database, ownerId: string, collectionId: string, itemId: string): Promise<void> {
+/** Only items in the caller's library can be collected; `itemOwner` is from libraryOwner (null: any item). */
+export async function addToCollection(db: D1Database, ownerId: string, collectionId: string, itemId: string, itemOwner: string | null = ownerId): Promise<void> {
 	const [insert, existing] = await db.batch([
 		db.prepare(`
 			INSERT INTO collection_items (collection_id, item_id)
 			SELECT c.id, i.id FROM collections c CROSS JOIN items i
-			WHERE c.id = ? AND c.owner_id = ? AND i.id = ? AND (i.owner_id = c.owner_id OR i.shared = 1)
+			WHERE c.id = ? AND c.owner_id = ? AND i.id = ? AND i.owner_id = coalesce(?, i.owner_id)
 			ON CONFLICT (collection_id, item_id) DO NOTHING
-		`).bind(collectionId, ownerId, itemId),
+		`).bind(collectionId, ownerId, itemId, itemOwner),
 		db.prepare(`
 			SELECT ci.item_id FROM collection_items ci
 			JOIN collections c ON c.id = ci.collection_id
 			JOIN items i ON i.id = ci.item_id
-			WHERE c.id = ? AND c.owner_id = ? AND i.id = ? AND (i.owner_id = c.owner_id OR i.shared = 1)
-		`).bind(collectionId, ownerId, itemId)
+			WHERE c.id = ? AND c.owner_id = ? AND i.id = ? AND i.owner_id = coalesce(?, i.owner_id)
+		`).bind(collectionId, ownerId, itemId, itemOwner)
 	]);
 	if (!insert.meta.changes && !existing.results.length) throw new Error('Collection or item not found');
 }

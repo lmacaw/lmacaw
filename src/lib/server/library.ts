@@ -167,6 +167,17 @@ export function enqueueImageStatement(db: D1Database, itemId: string, ownerId: s
 		.bind(crypto.randomUUID(), itemId, ownerId, now());
 }
 
+/** Requeues the item's latest image job if it failed; false when there is none to retry. */
+export async function retryImageAnalysis(db: D1Database, ownerId: string | null, itemId: string): Promise<boolean> {
+	const { results } = await db.prepare(`
+		UPDATE ai_jobs SET state = 'pending', attempts = 0, lease_token = NULL, lease_until = NULL
+		WHERE state = 'failed' AND id = (SELECT id FROM ai_jobs WHERE item_id = ? AND kind = 'image'
+			AND owner_id = coalesce(?, owner_id) ORDER BY created_at DESC, id DESC LIMIT 1)
+		RETURNING id
+	`).bind(itemId, ownerId).run();
+	return results.length > 0;
+}
+
 async function findDuplicate(db: D1Database, ownerId: string, hash: string, source: SourceMetadata | null) {
 	const row = await one<ItemRecord>(db, 'SELECT * FROM items WHERE owner_id = ? AND content_hash = ?', ownerId, hash);
 	if (!row) return null;
@@ -409,4 +420,13 @@ export async function deleteItem(env: Env, ownerId: string | null, id: string): 
 		cleanMediaKey(db, env.MEDIA, row.storage_key),
 		row.thumbnail_key && cleanMediaKey(db, env.MEDIA, row.thumbnail_key)
 	]);
+}
+
+// Openverse landing URLs among `sources` that the owner already saved (see source_metadata.source).
+export async function savedSources(env: Env, ownerId: string, sources: string[]): Promise<Set<string>> {
+	const rows = await many<{ source: string }>(env.DB, `
+		SELECT json_extract(source_metadata, '$.source') AS source FROM items
+		WHERE owner_id = ? AND json_extract(source_metadata, '$.source') IN (SELECT value FROM json_each(?))
+	`, ownerId, JSON.stringify(sources.filter(Boolean)));
+	return new Set(rows.map((row) => row.source));
 }

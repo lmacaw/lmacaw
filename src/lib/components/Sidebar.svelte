@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
+	import ThemeToggle from './ThemeToggle.svelte';
 	import type { Collection, Scope } from '$lib/types';
 
 	type Props = {
@@ -15,12 +16,6 @@
 		{ scope: 'shared', label: 'Shared', icon: 'share' },
 		{ scope: 'discover', label: 'Discover', icon: 'globe' }
 	] as const;
-	// One button cycles the appearance: system → light → dark.
-	const themes = {
-		system: { label: 'System', icon: 'monitor', next: 'light' },
-		light: { label: 'Light', icon: 'sun', next: 'dark' },
-		dark: { label: 'Dark', icon: 'moon', next: 'system' }
-	} as const;
 	let sidebar: HTMLElement = $state(undefined!);
 	// On small screens the sidebar is a drawer: move focus into it and let Escape close it.
 	$effect(() => { if (open) sidebar.querySelector<HTMLElement>('.nav-item')?.focus(); });
@@ -55,7 +50,7 @@
 		{/if}
 		<div class="account">
 			<span class="account-email" title={email}>{email}</span>
-			<button class="icon-button small" aria-label="Appearance: {themes[theme].label}" title="Appearance: {themes[theme].label}" onclick={() => ontheme(themes[theme].next)}><Icon name={themes[theme].icon} size={15} /></button>
+			<ThemeToggle {theme} {ontheme} small />
 			{#if publicMode}
 				<a class="icon-button small" aria-label="Sign out" title="Sign out" href="/cdn-cgi/access/logout" data-sveltekit-reload><Icon name="logout" size={15} /></a>
 			{:else}

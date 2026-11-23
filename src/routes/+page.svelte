@@ -6,8 +6,10 @@
 	import Gallery from '$lib/components/Gallery.svelte';
 	import DetailDialog from '$lib/components/DetailDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 	import type { Collection, Discovery, Item, Scope } from '$lib/types';
 	import { fetchAndUpload, uploadFile } from '$lib/upload';
+	import { sha256Of } from '$lib/thumbnail';
 	import { viewFromUrl, viewHref } from '$lib/view';
 
 	let { data } = $props();
@@ -21,18 +23,20 @@
 	let signInPending = $state(false), signInSent = $state(false);
 	let message = $state(''), messageDownload = $state<Item | null>(null), messageTimer: ReturnType<typeof setTimeout> | undefined;
 	let canCopy = $state(true), menuButton: HTMLButtonElement = $state(undefined!);
+	let pasteKey = $state('Ctrl+V'), dropActive = $state(false);
+	let staged: { id: string; file: File; hash: string; preview: string; failed: boolean }[] = $state([]), stageNote = $state('');
 	const view = $derived(viewFromUrl(page.url));
 	const selectedScope = $derived(view.scope), selectedCollection = $derived(view.collection);
 	let query = $state('');
 	const scope = $derived<Scope>(publicLibrary ? 'shared' : selectedScope);
 	let theme = $state<'system' | 'light' | 'dark'>('system'), menuOpen = $state(false), dragging = $state(false);
-	let items: Item[] = $state([]), loaded = $state(false), hasMore = $state(false), currentPage = 1, semanticAvailable = $state(false);
+	let items: Item[] = $state([]), loaded = $state(false), loadFailed = $state(false), hasMore = $state(false), currentPage = 1, semanticAvailable = $state(false);
 	let discoveries: Discovery[] = $state([]), discovering = $state(false);
 	let collections: Collection[] = $state([]), itemCollections: Collection[] = $state([]);
 	let current: Item | null = $state(null);
 	let invitationLink = $state('');
-	let formDialog: HTMLDialogElement = $state(undefined!), fileInput: HTMLInputElement = $state(undefined!);
-	let form = $state<{ kind: 'url' | 'collection' | 'rename'; value: string; error: string; progress: string }>({ kind: 'url', value: '', error: '', progress: '' });
+	let formDialog: HTMLDialogElement = $state(undefined!), addForm: HTMLFormElement = $state(undefined!), fileInput: HTMLInputElement = $state(undefined!);
+	let form = $state<{ kind: 'add' | 'collection' | 'rename'; value: string; error: string; progress: string }>({ kind: 'add', value: '', error: '', progress: '' });
 	let requestNumber = 0, searchTimer: ReturnType<typeof setTimeout> | undefined;
 
 	const collectionName = $derived(collections.find((collection) => collection.id === selectedCollection)?.name ?? 'Collection');
@@ -56,14 +60,19 @@
 		try {
 			const response = await fetch(`/api/v1/items?${params}`);
 			if (requestId !== requestNumber) return;
-			if (!response.ok) { notify('Could not load memes.'); return; }
+			if (!response.ok) { failLoad(page); return; }
 			const result = await response.json();
 			if (requestId !== requestNumber) return;
 			const seen = new Set(items.map((item) => item.id));
 			items = page === 1 ? result.items : [...items, ...result.items.filter((item: Item) => !seen.has(item.id))];
 			if (page === 1) semanticAvailable = result.semanticAvailable;
-			hasMore = result.hasMore; currentPage = page; loaded = true;
-		} catch { if (requestId === requestNumber) notify('Could not load memes.'); }
+			hasMore = result.hasMore; currentPage = page; loaded = true; loadFailed = false;
+		} catch { if (requestId === requestNumber) failLoad(page); }
+	}
+	// A failed first page has nothing to show, so it gets an inline retry instead of a toast.
+	function failLoad(page: number) {
+		if (page === 1 && !loaded) loadFailed = true;
+		else notify('Could not load memes.');
 	}
 	function queueSearch() {
 		if (searchTimer) clearTimeout(searchTimer);
@@ -79,7 +88,7 @@
 		menuOpen = false; void tick().then(() => menuButton?.focus());
 	}
 	function resetView() {
-		query = ''; discoveries = []; items = []; loaded = false; void refresh();
+		query = ''; discoveries = []; items = []; loaded = false; loadFailed = false; void refresh();
 	}
 	// A new view in the URL (a click, Back, or a link to "/") starts fresh; picking the current one again resets it.
 	$effect(() => {
@@ -132,21 +141,90 @@
 		invitationLink = `${window.location.origin}/invite#${(await response.json()).token}`;
 	}
 
-	async function addFiles(files: FileList | File[]) {
-		const list = Array.from(files);
-		let added = 0, duplicates = 0, failed: string[] = [];
-		for (const file of list) {
-			try {
-				const response = await uploadFile(file);
-				if (!response.ok) failed.push(file.name);
-				else if ((await response.json()).duplicate) duplicates++;
-				else added++;
-			} catch { failed.push(file.name); }
+	// Adds land in the open collection too; other views switch to the library to show them.
+	const addTarget = () => (scope === 'collection' ? selectedCollection : undefined);
+	async function showAdded() {
+		if (scope === 'library' || scope === 'collection') await refresh(); else select('library');
+	}
+
+	// Every add is previewed in the Add dialog first; nothing uploads until "Add N".
+	const adding = () => formDialog?.open && form.kind === 'add';
+	async function stage(files: FileList | File[]) {
+		const images = Array.from(files).filter((file) => file.type.startsWith('image/'));
+		if (!images.length) return;
+		if (!adding()) { if (formDialog.open) return; openForm('add'); }
+		// The same bytes twice (e.g. pasting one image again) are staged once.
+		let skipped = 0;
+		for (const file of images) {
+			const hash = await sha256Of(file);
+			if (!adding()) return;
+			if (staged.some((entry) => entry.hash === hash)) { skipped++; continue; }
+			staged = [...staged, { id: crypto.randomUUID(), file, hash, preview: URL.createObjectURL(file), failed: false }];
 		}
-		if (failed.length) notify(`Could not add ${failed.join(', ')}.`);
-		else if (duplicates && !added) notify('Already in your library.');
-		else notify(added === 1 ? 'Added.' : `Added ${added}.`);
-		if (scope !== 'library') select('library'); else await refresh();
+		stageNote = skipped ? `Skipped duplicate ${skipped === 1 ? 'image' : 'images'}.` : '';
+	}
+	function unstage(id: string) {
+		const entry = staged.find((candidate) => candidate.id === id);
+		if (entry) URL.revokeObjectURL(entry.preview);
+		staged = staged.filter((candidate) => candidate.id !== id);
+	}
+	function clearStaged() {
+		for (const entry of staged) URL.revokeObjectURL(entry.preview);
+		staged = []; stageNote = ''; dropActive = false;
+	}
+
+	// One URL per line, fetched through the image proxy into the preview; failed lines stay in the box.
+	async function previewUrls() {
+		const urls = [...new Set(form.value.split('\n').map((line) => line.trim()).filter(Boolean))];
+		if (!urls.length) { form.error = 'Paste at least one image URL.'; return; }
+		if (urls.length > 50) { form.error = 'Paste up to 50 URLs at a time.'; return; }
+		form.error = '';
+		const failed: string[] = [], files: File[] = [];
+		for (const [index, url] of urls.entries()) {
+			form.progress = `Loading ${index + 1} of ${urls.length}…`;
+			const attempt = () => fetch(`/api/v1/fetch?${new URLSearchParams({ url })}`).catch(() => null);
+			let response = await attempt();
+			if (!response?.ok) response = await attempt(); // one retry: remote hosts fail now and then
+			if (!response?.ok) { failed.push(url); continue; }
+			const blob = await response.blob();
+			files.push(new File([blob], url.split(/[?#]/)[0].split('/').pop() || 'image', { type: blob.type }));
+		}
+		form.progress = ''; form.value = failed.join('\n');
+		await stage(files);
+		if (failed.length) form.error = `${failed.length === 1 ? '1 link' : `${failed.length} links`} could not be loaded. Use public links to PNG, JPEG, WebP, or GIF files.`;
+	}
+
+	async function uploadStaged() {
+		const collection = addTarget(), queue = [...staged];
+		let added = 0, duplicates = 0, failed = 0;
+		form.error = '';
+		for (const [index, entry] of queue.entries()) {
+			form.progress = `Uploading ${index + 1} of ${queue.length}…`;
+			let ok = false;
+			try {
+				const response = await uploadFile(entry.file, { collection });
+				if (response.ok) { ok = true; if ((await response.json()).duplicate) duplicates++; else added++; }
+			} catch { /* counted below */ }
+			if (ok) unstage(entry.id);
+			else { failed++; staged = staged.map((candidate) => (candidate.id === entry.id ? { ...candidate, failed: true } : candidate)); }
+		}
+		form.progress = '';
+		if (added || duplicates) await showAdded();
+		const summary = [added && (added === 1 ? 'Added.' : `Added ${added}.`), duplicates && `${duplicates} already in your library.`].filter(Boolean).join(' ');
+		if (failed) { form.error = `${summary} Could not add ${failed === 1 ? '1 image' : `${failed} images`}.`.trim(); return; }
+		formDialog.close(); notify(summary);
+	}
+
+	// Files are staged; an image dragged from another page usually brings only its URL, which is loaded.
+	function dropInAdd(event: DragEvent) {
+		dropActive = false;
+		const data = event.dataTransfer;
+		if (data?.files.length) { event.preventDefault(); void stage(data.files); return; }
+		const urls = (data?.getData('text/uri-list') ?? '').split(/\r?\n/).filter((line) => line && !line.startsWith('#'));
+		if (!urls.length) return; // plain text can still drop into the URL box
+		event.preventDefault();
+		form.value = [form.value.trim(), ...urls].filter(Boolean).join('\n');
+		void previewUrls();
 	}
 
 	async function openItem(item: Item) {
@@ -231,38 +309,30 @@
 		} catch { notify('Openverse is unavailable. Try again later.'); }
 		finally { discovering = false; }
 	}
+	let savingDiscovery: string[] = $state([]);
 	async function saveDiscovery(item: Discovery) {
-		const response = await fetchAndUpload({ openverse: item.id }).catch(() => null);
-		notify(response?.ok ? 'Saved to your library.' : 'Could not save image.');
+		if (item.saved || savingDiscovery.includes(item.id)) return;
+		savingDiscovery.push(item.id);
+		try {
+			const response = await fetchAndUpload({ openverse: item.id }).catch(() => null);
+			if (!response?.ok) { notify('Could not save image.'); return; }
+			const target = discoveries.find((candidate) => candidate.id === item.id);
+			if (target) target.saved = true;
+			notify((await response.json().catch(() => ({}))).duplicate ? 'Already in your library.' : 'Saved to your library.');
+		} finally {
+			savingDiscovery = savingDiscovery.filter((id) => id !== item.id);
+		}
 	}
 
-	function openForm(kind: 'url' | 'collection' | 'rename') {
+	function openForm(kind: 'add' | 'collection' | 'rename') {
 		form = { kind, value: kind === 'rename' ? collectionName : '', error: '', progress: '' };
 		formDialog.showModal();
 	}
 	async function submitForm(event: SubmitEvent) {
 		event.preventDefault(); form.error = '';
 		try {
-			if (form.kind === 'url') {
-				// One URL per line, imported one at a time; failed lines stay in the box to retry.
-				const urls = [...new Set(form.value.split('\n').map((line) => line.trim()).filter(Boolean))];
-				if (!urls.length) { form.error = 'Paste at least one image URL.'; return; }
-				if (urls.length > 50) { form.error = 'Paste up to 50 URLs at a time.'; return; }
-				const failed: string[] = []; let added = 0, duplicates = 0;
-				for (const [index, url] of urls.entries()) {
-					form.progress = `Importing ${index + 1} of ${urls.length}…`;
-					const attempt = () => fetchAndUpload({ url }).catch(() => null);
-					let response = await attempt();
-					if (!response?.ok) response = await attempt(); // one retry: remote hosts fail now and then
-					if (!response?.ok) { failed.push(url); continue; }
-					if ((await response.json()).duplicate) duplicates++; else added++;
-				}
-				form.progress = '';
-				if (added || duplicates) { if (scope !== 'library') select('library'); else await refresh(); }
-				const summary = [added && `Added ${added}.`, duplicates && `${duplicates} already in your library.`].filter(Boolean).join(' ');
-				if (!failed.length) { formDialog.close(); notify(summary || 'Added.'); return; }
-				form.value = failed.join('\n');
-				form.error = `${summary} ${failed.length === 1 ? '1 link' : `${failed.length} links`} could not be imported. Use public links to PNG, JPEG, WebP, or GIF files.`.trim();
+			if (form.kind === 'add') {
+				await uploadStaged();
 			} else if (form.kind === 'collection') {
 				const response = await api('/api/v1/collections', 'POST', { name: form.value });
 				if (!response.ok) { form.error = 'Could not create collection. Names must be unique.'; return; }
@@ -292,14 +362,17 @@
 		ready = true;
 		// Missing on older browsers and on plain-HTTP origins other than localhost.
 		canCopy = window.isSecureContext && typeof ClipboardItem === 'function' && typeof navigator.clipboard?.write === 'function';
-		try { const saved = localStorage.getItem('lmacaw-theme'); if (saved === 'light' || saved === 'dark') setTheme(saved); } catch { /* storage unavailable */ }
+		if (/Mac|iPhone|iPad/.test(navigator.userAgent)) pasteKey = '⌘V';
+		// app.html already applied the saved theme; sync the toggle with it.
+		const saved = document.documentElement.dataset.theme;
+		if (saved === 'light' || saved === 'dark') theme = saved;
 		if (!showLibrary || publicLibrary) return;
 		void refreshCollections();
 		const paste = (event: ClipboardEvent) => {
 			const target = event.target;
 			if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable)) return;
 			const files = Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith('image/'));
-			if (files.length) { event.preventDefault(); void addFiles(files); }
+			if (files.length) { event.preventDefault(); void stage(files); }
 		};
 		document.addEventListener('paste', paste);
 		return () => document.removeEventListener('paste', paste);
@@ -334,7 +407,7 @@
 		class="app-shell" class:public-library={publicLibrary} role="presentation"
 		ondragover={publicLibrary ? undefined : (event) => { event.preventDefault(); if (event.dataTransfer?.types.includes('Files')) dragging = true; }}
 		ondragleave={publicLibrary ? undefined : (event) => { if (!event.relatedTarget) dragging = false; }}
-		ondrop={publicLibrary ? undefined : (event) => { event.preventDefault(); dragging = false; if (event.dataTransfer?.files.length) void addFiles(event.dataTransfer.files); }}
+		ondrop={publicLibrary ? undefined : (event) => { event.preventDefault(); dragging = false; if (event.dataTransfer?.files.length) void stage(event.dataTransfer.files); }}
 	>
 		{#if !publicLibrary && user}
 			<Sidebar
@@ -362,10 +435,11 @@
 					<input id="search" type="search" placeholder={scope === 'discover' ? 'Search Openverse' : 'Search'} bind:value={query} oninput={queueSearch} onkeydown={(event) => { if (event.key === 'Enter' && scope === 'discover') void discover(); }} />
 				</div>
 				{#if !publicLibrary}
-					<button class="button ghost hide-small" onclick={() => openForm('url')}>Add URL</button>
-					<button class="icon-button show-small" aria-label="Add URL" onclick={() => openForm('url')}><Icon name="link" /></button>
-					<button class="button primary" disabled={!ready} onclick={() => fileInput.click()}>Add</button>
-					{#if ready}<input hidden bind:this={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onchange={(event) => { if (event.currentTarget.files) void addFiles(event.currentTarget.files); event.currentTarget.value = ''; }} />{/if}
+					<button class="button primary add-button" disabled={!ready} onclick={() => openForm('add')}><Icon name="plus" size={15} />Add</button>
+					{#if ready}<input hidden bind:this={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onchange={(event) => { if (event.currentTarget.files) void stage(event.currentTarget.files); event.currentTarget.value = ''; }} />{/if}
+				{:else}
+					<!-- Public visitors have no sidebar, so the appearance toggle lives here. -->
+					<ThemeToggle {theme} ontheme={setTheme} disabled={!ready} />
 				{/if}
 			</header>
 
@@ -379,7 +453,7 @@
 								<img src={`https://api.openverse.org/v1/images/${item.id}/thumb/`} alt={item.title || 'Openverse image'} loading="lazy" referrerpolicy="no-referrer" />
 								<div class="discover-overlay">
 									<span class="discover-credit">{item.attribution || item.title}</span>
-									<button class="tile-action labeled" aria-label={`Save ${item.title || 'image'}`} onclick={() => saveDiscovery(item)}><Icon name="bookmark" size={14} />Save</button>
+									<button class="tile-action labeled" aria-label={`${item.saved ? 'Saved' : 'Save'} ${item.title || 'image'}`} disabled={item.saved || savingDiscovery.includes(item.id)} onclick={() => saveDiscovery(item)}><Icon name="bookmark" size={14} />{item.saved ? 'Saved' : savingDiscovery.includes(item.id) ? 'Saving…' : 'Save'}</button>
 								</div>
 							</li>
 						{/each}
@@ -390,6 +464,8 @@
 			{:else if items.length}
 				<Gallery {items} {canCopy} {publicLibrary} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} />
 				{#if hasMore}<div class="more"><button class="button ghost" onclick={() => refresh(currentPage + 1)}>Load more</button></div>{/if}
+			{:else if loadFailed}
+				<div class="empty"><p>Could not load memes.</p><button class="button ghost" onclick={() => { loadFailed = false; void refresh(); }}>Retry</button></div>
 			{:else if loaded}
 				<div class="empty">
 					{#if query}<p>No matches.</p>
@@ -404,19 +480,42 @@
 	</div>
 
 	<DetailDialog
-		item={current} {canCopy} {publicLibrary} readonly={scope === 'shared'} collections={itemCollections} message={current ? message : ''} aiEnabled={data.aiEnabled}
+		item={current} {canCopy} {publicLibrary} {publicMode} readonly={scope === 'shared'} collections={itemCollections} message={current ? message : ''} aiEnabled={data.aiEnabled}
 		onclose={() => (current = null)} oncopy={copyImage} onupdate={updateItem} ondelete={removeItem}
 		onsave={saveShared} onretry={retryAi} ontogglecollection={toggleCollection}
 	/>
 
-	{#if !publicLibrary}<dialog bind:this={formDialog} class="form-dialog" aria-labelledby="form-title">
-		<form onsubmit={submitForm}>
-			<h2 id="form-title">{form.kind === 'url' ? 'Add URL' : form.kind === 'collection' ? 'New collection' : 'Rename collection'}</h2>
-			{#if form.kind === 'url'}
-				<label class="field-label" for="form-value">Image URLs</label>
-				<textarea id="form-value" class="input url-list" rows="5" placeholder={'https://…/first.jpg\nhttps://…/second.gif'} aria-describedby="form-hint" bind:value={form.value} required
-					onkeydown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) event.currentTarget.form?.requestSubmit(); }}></textarea>
-				<p id="form-hint" class="hint">One link per line.</p>
+	{#if !publicLibrary}<dialog bind:this={formDialog} class="form-dialog" aria-labelledby="form-title" onclose={clearStaged}
+		ondragover={(event) => { if (form.kind === 'add') { event.preventDefault(); dropActive = true; } }}
+		ondragleave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropActive = false; }}
+		ondrop={(event) => { if (form.kind === 'add') dropInAdd(event); }}>
+		<form onsubmit={submitForm} bind:this={addForm}>
+			<h2 id="form-title">{form.kind === 'add' ? 'Add images' : form.kind === 'collection' ? 'New collection' : 'Rename collection'}</h2>
+			{#if form.kind === 'add'}
+				<!-- svelte-ignore a11y_autofocus -->
+				<button type="button" class="dropzone" class:active={dropActive} autofocus onclick={() => fileInput.click()}>
+					<Icon name="image" size={22} />
+					<span>Drop images here, or click to choose</span>
+					<span class="hint paste-hint">Paste with {pasteKey}</span>
+				</button>
+				{#if staged.length}
+					<ul class="staged" aria-label="Images to add">
+						{#each staged as entry (entry.id)}
+							<li class:failed={entry.failed}>
+								<img src={entry.preview} alt={entry.file.name} />
+								<button type="button" aria-label={`Remove ${entry.file.name}`} disabled={Boolean(form.progress)} onclick={() => unstage(entry.id)}><Icon name="x" size={13} /></button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+				{#if stageNote}<p class="hint stage-note" role="status">{stageNote}</p>{/if}
+				<label class="field-label url-label" for="form-value">Image URLs</label>
+				<textarea id="form-value" class="input url-list" rows="3" placeholder={'https://…/first.jpg\nhttps://…/second.gif'} aria-describedby="form-hint" bind:value={form.value}
+					onkeydown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void previewUrls(); } }}></textarea>
+				<div class="url-row">
+					<p id="form-hint" class="hint">One link per line.</p>
+					<button class="button ghost" type="button" disabled={!form.value.trim() || Boolean(form.progress)} onclick={previewUrls}>Preview</button>
+				</div>
 			{:else}
 				<label class="field-label" for="form-value">Collection name</label>
 				<input id="form-value" class="input" maxlength="80" bind:value={form.value} required />
@@ -424,7 +523,7 @@
 			{#if form.error}<p class="error" role="alert">{form.error}</p>{/if}
 			<div class="form-actions">
 				<button class="button ghost" type="button" onclick={() => formDialog.close()}>Cancel</button>
-				<button class="button primary" type="submit" disabled={Boolean(form.progress)}>{form.progress || (form.kind === 'url' ? 'Import' : form.kind === 'collection' ? 'Create' : 'Rename')}</button>
+				<button class="button primary" type="submit" disabled={Boolean(form.progress) || (form.kind === 'add' && !staged.length)}>{form.progress || (form.kind === 'add' ? (staged.length ? `Add ${staged.length}` : 'Add') : form.kind === 'collection' ? 'Create' : 'Rename')}</button>
 			</div>
 		</form>
 	</dialog>{/if}

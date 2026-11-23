@@ -25,6 +25,7 @@ async function signInWith(page: Page, image: { name: string; mimeType: string; b
 	await page.getByRole('button', { name: 'Sign in' }).click();
 	await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
 	await page.locator('input[type=file]').setInputFiles(image);
+	await page.getByRole('button', { name: /^Add \d+$/ }).click();
 	await expect(page.locator('[data-meme-tile]')).toHaveCount(1);
 }
 const png = async () => ({ name: 'copy.png', mimeType: 'image/png', buffer: await sharp({ create: { width: 6, height: 5, channels: 3, background: '#b4704c' } }).png().toBuffer() });

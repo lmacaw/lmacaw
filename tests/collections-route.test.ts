@@ -140,8 +140,8 @@ test('returns 404 for foreign collections, invisible items and missing membershi
 	}
 
 	await env.DB.prepare('UPDATE items SET shared = 1 WHERE id = ?').bind(itemId).run();
-	expect((await items.POST(eventFor('POST', { user, id: own.id, items: true, body }))).status).toBe(204);
+	// Shared items of other owners are not in the caller's library, so the collection would never list them (#31).
+	expect((await items.POST(eventFor('POST', { user, id: own.id, items: true, body }))).status).toBe(404);
 	const listed = await collections.GET(eventFor('GET', { user, query: `?item=${itemId}` }));
-	expect(await listed.json()).toEqual({ collections: [{ ...own, hasItem: true }] });
-	expect((await items.DELETE(eventFor('DELETE', { user, id: own.id, items: true, query }))).status).toBe(204);
+	expect(await listed.json()).toEqual({ collections: [{ ...own, hasItem: false }] });
 });

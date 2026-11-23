@@ -167,6 +167,17 @@ export function enqueueImageStatement(db: D1Database, itemId: string, ownerId: s
 		.bind(crypto.randomUUID(), itemId, ownerId, now());
 }
 
+/** Requeues the item's latest image job if it failed; false when there is none to retry. */
+export async function retryImageAnalysis(db: D1Database, ownerId: string | null, itemId: string): Promise<boolean> {
+	const { results } = await db.prepare(`
+		UPDATE ai_jobs SET state = 'pending', attempts = 0, lease_token = NULL, lease_until = NULL
+		WHERE state = 'failed' AND id = (SELECT id FROM ai_jobs WHERE item_id = ? AND kind = 'image'
+			AND owner_id = coalesce(?, owner_id) ORDER BY created_at DESC, id DESC LIMIT 1)
+		RETURNING id
+	`).bind(itemId, ownerId).run();
+	return results.length > 0;
+}
+
 async function findDuplicate(db: D1Database, ownerId: string, hash: string, source: SourceMetadata | null) {
 	const row = await one<ItemRecord>(db, 'SELECT * FROM items WHERE owner_id = ? AND content_hash = ?', ownerId, hash);
 	if (!row) return null;

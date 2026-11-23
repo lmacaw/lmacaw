@@ -392,7 +392,7 @@
 	</div>
 
 	<DetailDialog
-		item={current} {canCopy} {publicLibrary} readonly={scope === 'shared'} collections={itemCollections} message={current ? message : ''} aiEnabled={data.aiEnabled}
+		item={current} {canCopy} {publicLibrary} {publicMode} readonly={scope === 'shared'} collections={itemCollections} message={current ? message : ''} aiEnabled={data.aiEnabled}
 		onclose={() => (current = null)} oncopy={copyImage} onupdate={updateItem} ondelete={removeItem}
 		onsave={saveShared} onretry={retryAi} ontogglecollection={toggleCollection}
 	/>

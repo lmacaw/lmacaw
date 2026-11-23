@@ -1,14 +1,15 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
+	import { shareTitle } from '$lib/share';
 	import type { Collection, Item } from '$lib/types';
 
 	type Props = {
-		item: Item | null; canCopy: boolean; readonly: boolean; publicLibrary: boolean; collections: Collection[]; message: string; aiEnabled: boolean;
+		item: Item | null; canCopy: boolean; readonly: boolean; publicLibrary: boolean; publicMode: boolean; collections: Collection[]; message: string; aiEnabled: boolean;
 		onclose: () => void; oncopy: (item: Item) => void; onupdate: (item: Item, patch: Record<string, unknown>) => void;
 		ondelete: (item: Item) => void; onsave: (item: Item) => void; onretry: (item: Item) => void;
 		ontogglecollection: (collection: Collection, checked: boolean) => void;
 	};
-	let { item, canCopy, readonly, publicLibrary, collections, message, aiEnabled, onclose, oncopy, onupdate, ondelete, onsave, onretry, ontogglecollection }: Props = $props();
+	let { item, canCopy, readonly, publicLibrary, publicMode, collections, message, aiEnabled, onclose, oncopy, onupdate, ondelete, onsave, onretry, ontogglecollection }: Props = $props();
 	const readOnly = $derived(readonly || publicLibrary);
 	let dialog = $state<HTMLDialogElement>(undefined!);
 	let description = $state(''), tags = $state(''), text = $state(''), loadedId = '';
@@ -49,7 +50,7 @@
 						<button class="icon-button" onclick={() => onsave(item)} aria-label="Save to library" title="Save to library"><Icon name="bookmark" /></button>
 					{:else if !publicLibrary}
 						<button class="icon-button" class:on={item.favorite} aria-pressed={item.favorite} onclick={() => onupdate(item, { favorite: !item.favorite })} aria-label={item.favorite ? 'Unfavorite' : 'Favorite'} title="Favorite"><Icon name="heart" filled={item.favorite} /></button>
-						<button class="icon-button" class:on={item.shared} aria-pressed={item.shared} onclick={() => onupdate(item, { shared: !item.shared })} aria-label={item.shared ? 'Unshare' : 'Share'} title={item.shared ? 'Shared with members' : 'Share with members'}><Icon name="share" /></button>
+						<button class="icon-button" class:on={item.shared} aria-pressed={item.shared} onclick={() => onupdate(item, { shared: !item.shared })} aria-label={item.shared ? 'Unshare' : 'Share'} title={shareTitle(item.shared, publicMode)}><Icon name="share" /></button>
 						<button class="icon-button danger" onclick={() => ondelete(item)} aria-label="Delete" title="Delete"><Icon name="trash" /></button>
 					{/if}
 					<span class="spacer"></span>

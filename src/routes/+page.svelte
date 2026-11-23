@@ -278,7 +278,9 @@
 		ready = true;
 		// Missing on older browsers and on plain-HTTP origins other than localhost.
 		canCopy = window.isSecureContext && typeof ClipboardItem === 'function' && typeof navigator.clipboard?.write === 'function';
-		try { const saved = localStorage.getItem('lmacaw-theme'); if (saved === 'light' || saved === 'dark') setTheme(saved); } catch { /* storage unavailable */ }
+		// app.html already applied the saved theme; sync the toggle with it.
+		const saved = document.documentElement.dataset.theme;
+		if (saved === 'light' || saved === 'dark') theme = saved;
 		if (!showLibrary) return;
 		void refresh();
 		if (publicLibrary) return;

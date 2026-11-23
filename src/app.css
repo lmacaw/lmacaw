@@ -69,7 +69,7 @@ textarea.input { resize: vertical; }
 .about-card p + p { margin-top: 12px; }
 .about-card p a { text-decoration: underline; text-underline-offset: 2px; }
 .notice { font-size: 13px; line-height: 1.5; }
-.brand { display: flex; align-items: center; gap: 9px; font-weight: 640; font-size: 15px; letter-spacing: -.01em; }
+.brand { display: flex; align-items: center; gap: 9px; text-decoration: none; font-weight: 640; font-size: 15px; letter-spacing: -.01em; }
 .brand-mark { display: block; width: 24px; height: 24px; border-radius: 6px; }
 
 /* Shell */

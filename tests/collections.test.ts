@@ -44,7 +44,7 @@ test('lists only the owner’s collections in case-insensitive name order with o
 	await expect(removeFromCollection(db, owner, cats.id, item)).rejects.toThrow('Collection or item not found');
 });
 
-test('allows shared items and idempotent adds while rejecting missing or private items', async () => {
+test('collects only library items, idempotently, and rejects shared items of other owners (#31)', async () => {
 	const shared = crypto.randomUUID();
 	await insertItem(item, other);
 	await insertItem(shared, other, 1);
@@ -52,14 +52,14 @@ test('allows shared items and idempotent adds while rejecting missing or private
 
 	await expect(addToCollection(db, owner, collection.id, item)).rejects.toThrow('Collection or item not found');
 	await expect(addToCollection(db, owner, collection.id, crypto.randomUUID())).rejects.toThrow('Collection or item not found');
-	await addToCollection(db, owner, collection.id, shared);
-	await addToCollection(db, owner, collection.id, shared);
-	const rows = await db.prepare('SELECT item_id FROM collection_items WHERE collection_id = ?').bind(collection.id).all();
-	expect(rows.results).toEqual([{ item_id: shared }]);
-
-	await db.prepare('UPDATE items SET shared = 0 WHERE id = ?').bind(shared).run();
 	await expect(addToCollection(db, owner, collection.id, shared)).rejects.toThrow('Collection or item not found');
-	await removeFromCollection(db, owner, collection.id, shared);
+
+	// A public-mode admin manages every item (libraryOwner is null).
+	await addToCollection(db, owner, collection.id, item, null);
+	await addToCollection(db, owner, collection.id, item, null);
+	const rows = await db.prepare('SELECT item_id FROM collection_items WHERE collection_id = ?').bind(collection.id).all();
+	expect(rows.results).toEqual([{ item_id: item }]);
+	await removeFromCollection(db, owner, collection.id, item);
 });
 
 test('only owners can rename and delete collections, and deletion preserves items', async () => {

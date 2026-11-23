@@ -1,25 +1,30 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
+	import ThemeToggle from './ThemeToggle.svelte';
 	import type { Collection, Scope } from '$lib/types';
 
 	type Props = {
-		scope: Scope; selectedCollection: string; collections: Collection[]; email: string; isAdmin: boolean;
+		scope: Scope; selectedCollection: string; collections: Collection[]; email: string; canInvite: boolean; publicMode: boolean;
 		theme: 'system' | 'light' | 'dark'; invitationLink: string; open: boolean;
 		onselect: (scope: Scope, collection?: string) => void; onnewcollection: () => void; oninvite: () => void;
 		ontheme: (value: 'system' | 'light' | 'dark') => void; onsignout: () => void; onclose: () => void;
 	};
-	let { scope, selectedCollection, collections, email, isAdmin, theme, invitationLink, open, onselect, onnewcollection, oninvite, ontheme, onsignout, onclose }: Props = $props();
+	let { scope, selectedCollection, collections, email, canInvite, publicMode, theme, invitationLink, open, onselect, onnewcollection, oninvite, ontheme, onsignout, onclose }: Props = $props();
 	const views = [
 		{ scope: 'library', label: 'Library', icon: 'image' },
 		{ scope: 'favorites', label: 'Favorites', icon: 'heart' },
 		{ scope: 'shared', label: 'Shared', icon: 'share' },
 		{ scope: 'discover', label: 'Discover', icon: 'globe' }
 	] as const;
+	let sidebar: HTMLElement = $state(undefined!);
+	// On small screens the sidebar is a drawer: move focus into it and let Escape close it.
+	$effect(() => { if (open) sidebar.querySelector<HTMLElement>('.nav-item')?.focus(); });
 </script>
 
+<svelte:window onkeydown={(event) => { if (open && event.key === 'Escape') onclose(); }} />
 {#if open}<button class="scrim" aria-label="Close menu" onclick={onclose}></button>{/if}
-<aside class="sidebar" class:open>
-	<div class="brand"><span class="brand-mark">L</span><span>Lmacaw</span></div>
+<aside class="sidebar" class:open bind:this={sidebar}>
+	<a class="brand" href="/" onclick={(event) => { event.preventDefault(); onselect('library'); }}><img class="brand-mark" src="/favicon.svg" alt="" width="24" height="24" /><span>Lmacaw</span></a>
 	<nav aria-label="Library">
 		{#each views as view (view.scope)}
 			<button class="nav-item" class:active={scope === view.scope} aria-current={scope === view.scope ? 'page' : undefined} onclick={() => onselect(view.scope)}>
@@ -36,17 +41,21 @@
 		{/each}
 	</nav>
 	<div class="sidebar-footer">
-		{#if isAdmin}
+		{#if canInvite}
 			<button class="nav-item" onclick={oninvite}><Icon name="link" size={16} /><span>Invite</span></button>
 			{#if invitationLink}
 				<label class="field-label" for="invite-link">Invitation link</label>
 				<input id="invite-link" class="input compact" value={invitationLink} readonly onfocus={(event) => event.currentTarget.select()} />
 			{/if}
 		{/if}
-		<label class="field-label" for="theme">Appearance</label>
-		<select id="theme" class="input compact" value={theme} onchange={(event) => ontheme(event.currentTarget.value as 'system' | 'light' | 'dark')}>
-			<option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
-		</select>
-		<div class="account"><span class="account-email" title={email}>{email}</span><button class="text-button" onclick={onsignout}>Sign out</button></div>
+		<div class="account">
+			<span class="account-email" title={email}>{email}</span>
+			<ThemeToggle {theme} {ontheme} small />
+			{#if publicMode}
+				<a class="icon-button small" aria-label="Sign out" title="Sign out" href="/cdn-cgi/access/logout" data-sveltekit-reload><Icon name="logout" size={15} /></a>
+			{:else}
+				<button class="icon-button small" aria-label="Sign out" title="Sign out" onclick={onsignout}><Icon name="logout" size={15} /></button>
+			{/if}
+		</div>
 	</div>
 </aside>

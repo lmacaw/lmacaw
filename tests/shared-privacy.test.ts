@@ -1,18 +1,42 @@
-import { afterAll, expect, test } from 'bun:test';
-import { SQL } from 'bun';
-import { randomUUID } from 'node:crypto';
+import { env } from 'cloudflare:test';
+import { expect, test } from 'vitest';
+import type { User } from '$lib/server/auth';
+import { updateItem } from '$lib/server/library';
 import { GET } from '../src/routes/api/v1/items/+server';
+import { createTestItem, listEvent, unsignedEnv, user } from './fixtures';
 
-const url = process.env.TEST_DATABASE_URL;
-if (!url || !new URL(url).pathname.endsWith('_test')) throw new Error('TEST_DATABASE_URL must point to a test database');
-process.env.DATABASE_URL = url;
-const sql = new SQL(url); const owner = randomUUID(); const member = randomUUID(); const id = randomUUID();
-afterAll(async () => { await sql`DELETE FROM users WHERE id IN (${owner}, ${member})`; await sql.close(); });
+async function listing(actor: User, query: string) {
+	const response = await GET(listEvent(actor, query));
+	expect(response.status).toBe(200);
+	return (await response.json()).items as { id: string; favorite: boolean }[];
+}
 
-test('shared results do not reveal the owner’s private favorite state', async () => {
-	await sql`INSERT INTO users (id, email, password_hash) VALUES (${owner}, ${owner + '@example.com'}, 'unused'), (${member}, ${member + '@example.com'}, 'unused')`;
-	await sql`INSERT INTO items (id, owner_id, content_hash, storage_key, content_type, width, height, favorite, shared) VALUES (${id}, ${owner}, 'hash', ${'d'.repeat(64)}, 'image/png', 1, 1, true, true)`;
-	const response = await GET({ url: new URL('https://example.test/api/v1/items?scope=shared'), locals: { user: { id: member } } } as never);
-	const data = await response.json();
-	expect(data.items.find((item: { id: string }) => item.id === id).favorite).toBe(false);
+test('respects library, favorites, shared and owned collection scopes', async () => {
+	const owner = await user();
+	const other = await user();
+	const { item: privateItem } = await createTestItem(owner);
+	const { item: sharedItem } = await createTestItem(owner);
+	const { item: otherItem } = await createTestItem(other);
+	await updateItem(unsignedEnv, owner.id, sharedItem.id, { shared: true, favorite: true });
+	await updateItem(unsignedEnv, other.id, otherItem.id, { shared: true, favorite: true });
+
+	const collection = crypto.randomUUID();
+	const foreignCollection = crypto.randomUUID();
+	await env.DB.batch([
+		env.DB.prepare('INSERT INTO collections (id, owner_id, name, created_at) VALUES (?, ?, ?, ?), (?, ?, ?, ?)')
+			.bind(collection, owner.id, 'My collection', 1, foreignCollection, other.id, 'Foreign collection', 1),
+		env.DB.prepare('INSERT INTO collection_items (collection_id, item_id) VALUES (?, ?), (?, ?), (?, ?)')
+			.bind(collection, privateItem.id, collection, otherItem.id, foreignCollection, sharedItem.id)
+	]);
+
+	expect((await listing(owner, '?scope=library')).map(({ id }) => id).sort()).toEqual([privateItem.id, sharedItem.id].sort());
+	expect((await listing(owner, '?scope=favorites')).map(({ id }) => id)).toEqual([sharedItem.id]);
+	expect((await listing(owner, `?scope=collection&collection=${collection}`)).map(({ id }) => id)).toEqual([privateItem.id]);
+	expect(await listing(owner, `?collection=${foreignCollection}`)).toEqual([]);
+	const shared = await listing(owner, '?scope=shared');
+	expect(shared.map(({ id, favorite }) => [id, favorite])).toEqual(expect.arrayContaining([
+		[sharedItem.id, true], [otherItem.id, false]
+	]));
+	expect(shared.map(({ id }) => id)).not.toContain(privateItem.id);
+	expect((await listing(other, '?scope=shared')).find(({ id }) => id === sharedItem.id)?.favorite).toBe(false);
 });

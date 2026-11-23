@@ -1,49 +1,145 @@
-import { afterAll, expect, test } from 'bun:test';
-import { SQL } from 'bun';
-import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import sharp from 'sharp';
+import { env } from 'cloudflare:test';
+import { beforeEach, expect, test, vi } from 'vitest';
 import { GET, POST } from '../src/routes/api/v1/items/+server';
-import { createCollection, addToCollection } from '../src/lib/server/collections';
+import { createCollection } from '$lib/server/collections';
+import { eventFor, imageInput, itemsRoute, jpeg, listEvent, png, signedBindings, uploadEvent, uploadForm, user, mediaKeys } from './fixtures';
 
-const url = process.env.TEST_DATABASE_URL;
-if (!url || !new URL(url).pathname.endsWith('_test')) throw new Error('TEST_DATABASE_URL must point to a test database');
-process.env.DATABASE_URL = url;
-const root = await mkdtemp(join(tmpdir(), 'lmacaw-items-api-'));
-process.env.MEDIA_ROOT = root;
-const sql = new SQL(url);
-const id = randomUUID();
-afterAll(async () => { await sql`DELETE FROM users WHERE id = ${id}`; await sql.close(); await rm(root, { recursive: true, force: true }); });
+let keysBefore: string[] = [];
+beforeEach(async () => {
+	keysBefore = await mediaKeys();
+});
 
-test('upload requires authentication and does not expose storage keys', async () => {
-	await sql`INSERT INTO users (id, email, password_hash) VALUES (${id}, ${id + '@example.com'}, 'unused')`;
-	const data = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#ffffff' } }).png().toBuffer();
-	const form = new FormData(); form.set('file', new File([data], 'meme.png', { type: 'image/png' }));
-	const request = new Request('https://example.test/api/v1/items', { method: 'POST', headers: { origin: 'https://example.test' }, body: form });
-	const locals = { user: { id, email: id + '@example.com', isAdmin: false } };
-	const response = await POST({ request, url: new URL(request.url), locals } as never);
+test('requires authentication to list and upload', async () => {
+	expect((await GET(listEvent(null))).status).toBe(401);
+	expect((await POST(await uploadEvent(null))).status).toBe(401);
+});
+
+test('accepts multipart uploads, returns a public DTO and reuses a duplicate', async () => {
+	const owner = await user();
+	const input = imageInput({
+		original: new File([png], 'pixel.jpg', { type: 'image/jpeg' }),
+		thumbnail: new File([jpeg], 'pixel.webp', { type: 'image/webp' })
+	});
+	const response = await POST(await uploadEvent(owner, uploadForm(input)));
 	expect(response.status).toBe(201);
 	const payload = await response.json();
-	expect(payload.item.id).toBeDefined();
-	expect(payload.item.storageKey).toBeUndefined();
-	const list = await GET({ url: new URL('https://example.test/api/v1/items'), locals } as never);
-	expect((await list.json()).items).toHaveLength(1);
-	await sql`UPDATE items SET description = ${'con mèo mệt mỏi'} WHERE id = ${payload.item.id}`;
-	const search = await GET({ url: new URL('https://example.test/api/v1/items?q=m%E1%BB%87t'), locals } as never);
-	expect((await search.json()).items).toHaveLength(1);
-	const absent = await GET({ url: new URL('https://example.test/api/v1/items?q=banana'), locals } as never);
-	expect((await absent.json()).items).toHaveLength(0);
-	await sql`INSERT INTO item_analysis (item_id, description, extracted_text, suggested_tags, embedding_model) VALUES (${payload.item.id}, 'blue cat', 'late meeting', ARRAY['tired'], 'model')`;
-	const aiText = await GET({ url: new URL('https://example.test/api/v1/items?q=meeting'), locals } as never);
-	expect((await aiText.json()).items).toHaveLength(1);
-	const collection = await createCollection(sql, id, 'Cats');
-	await addToCollection(sql, id, collection.id, payload.item.id);
-	const filtered = await GET({ url: new URL(`https://example.test/api/v1/items?collection=${collection.id}`), locals } as never);
-	expect((await filtered.json()).items).toHaveLength(1);
-	const none = await GET({ url: new URL('https://example.test/api/v1/items?collection=07ab9f56-a51c-4e04-9b56-0be98ea84a49'), locals } as never);
-	expect((await none.json()).items).toHaveLength(0);
-	const denied = await GET({ url: new URL('https://example.test/api/v1/items'), locals: { user: null } } as never);
-	expect(denied.status).toBe(401);
+	expect(payload).toEqual({ duplicate: false, item: {
+		id: expect.any(String), content_type: 'image/png', shared: false, favorite: false, description: '',
+		tags: [], source_metadata: null, ai_description: null, extracted_text: null, suggested_tags: null, ai_state: 'pending'
+	} });
+	const duplicate = await POST(await uploadEvent(owner, uploadForm(input)));
+	expect(duplicate.status).toBe(200);
+	expect(await duplicate.json()).toEqual({ ...payload, duplicate: true });
+
+	const list = await GET(listEvent(owner, '', signedBindings));
+	expect(list.headers.get('cache-control')).toBe('private, no-store');
+	// Lists carry no presigned URLs: they would expire while the page stays open.
+	expect(await list.json()).toEqual({ items: [payload.item], semanticAvailable: false, hasMore: false });
+});
+
+test('adds new and duplicate uploads to the open collection, and rejects a foreign one before writing (#27)', async () => {
+	const owner = await user();
+	const other = await user();
+	const cats = await createCollection(env.DB, owner.id, 'Cats');
+	const foreign = await createCollection(env.DB, other.id, 'Private');
+	const input = imageInput();
+	const inCollection = (collection: string) => {
+		const form = uploadForm(input);
+		form.set('collection', collection);
+		return form;
+	};
+
+	const invalid = await POST(await uploadEvent(owner, inCollection('invalid')));
+	expect(invalid.status).toBe(400);
+	expect(await invalid.json()).toEqual({ error: 'Invalid collection' });
+	expect((await POST(await uploadEvent(owner, inCollection(foreign.id)))).status).toBe(404);
+	expect(await mediaKeys()).toEqual(keysBefore);
+
+	const created = await POST(await uploadEvent(owner, inCollection(cats.id.toUpperCase())));
+	expect(created.status).toBe(201);
+	const { item } = await created.json();
+	const listed = async () => (await (await GET(listEvent(owner, `?collection=${cats.id}`))).json()).items.map(({ id }: { id: string }) => id);
+	expect(await listed()).toEqual([item.id]);
+
+	await env.DB.prepare('DELETE FROM collection_items WHERE collection_id = ?').bind(cats.id).run();
+	const duplicate = await POST(await uploadEvent(owner, inCollection(cats.id)));
+	expect(duplicate.status).toBe(200);
+	expect(await listed()).toEqual([item.id]);
+});
+
+test.each([
+	[undefined, 411, 'Length required'],
+	[String(21 * 1024 * 1024 + 300 * 1024 + 1), 413, 'File too large'],
+	['10x', 400, 'Invalid upload']
+])('rejects content-length %s before parsing multipart', async (length, status, error) => {
+	const actor = await user();
+	const headers = length === undefined ? undefined : { 'content-length': length };
+	const event = eventFor(itemsRoute, itemsRoute, actor, { method: 'POST', headers });
+	const parse = vi.spyOn(event.request, 'formData');
+	const response = await POST(event);
+	expect(response.status).toBe(status);
+	expect(await response.json()).toEqual({ error });
+	expect(parse).not.toHaveBeenCalled();
+});
+
+test('rejects a cross-origin upload before parsing multipart', async () => {
+	const event = eventFor(itemsRoute, itemsRoute, await user(), {
+		method: 'POST', headers: { origin: 'https://other.example' }
+	});
+	expect((await POST(event)).status).toBe(403);
+});
+
+test.each([
+	['file', '%PDF-1.7', 'Unsupported image format'],
+	['thumbnail', png, 'Invalid thumbnail']
+])('rejects mismatched %s bytes with no R2 writes', async (part, bytes, error) => {
+	const owner = await user();
+	const form = uploadForm();
+	form.set(part, new Blob([bytes], { type: 'image/png' }), 'photo.png');
+	const response = await POST(await uploadEvent(owner, form));
+	expect(response.status).toBe(400);
+	expect(await response.json()).toEqual({ error });
+	expect(await mediaKeys()).toEqual(keysBefore);
+});
+
+test('records Openverse metadata from the server and indexes its title', async () => {
+	const owner = await user();
+	const id = crypto.randomUUID();
+	const form = uploadForm();
+	form.set('openverse', id);
+	form.set('source_metadata', JSON.stringify({ creator: 'Untrusted' }));
+	const fetcher = vi.fn().mockResolvedValue(Response.json({
+		id, url: 'https://images.example/pixel.png', title: 'Chú mèo', creator: 'Verified creator',
+		creator_url: 'https://images.example/creator', foreign_landing_url: 'https://images.example/source',
+		license: 'cc0', license_url: 'https://creativecommons.org/publicdomain/zero/1.0/', attribution: 'Public domain'
+	}));
+	vi.stubGlobal('fetch', fetcher);
+	try {
+		const response = await POST(await uploadEvent(owner, form));
+		expect(response.status).toBe(201);
+		expect(fetcher).toHaveBeenCalledWith(`https://api.openverse.org/v1/images/${id}/`, expect.anything());
+		const payload = await response.json();
+		expect(payload.item.source_metadata).toEqual({
+			source: 'https://images.example/source', title: 'Chú mèo', creator: 'Verified creator',
+			creatorUrl: 'https://images.example/creator', license: 'cc0',
+			licenseUrl: 'https://creativecommons.org/publicdomain/zero/1.0/', attribution: 'Public domain'
+		});
+		expect((await (await GET(listEvent(owner, '?q=chu+meo'))).json()).items)
+			.toEqual([expect.objectContaining({ id: payload.item.id })]);
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});
+
+test('returns 400 without writing media when Openverse fails', async () => {
+	const owner = await user();
+	const form = uploadForm();
+	form.set('openverse', crypto.randomUUID());
+	vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 503 })));
+	try {
+		expect((await POST(await uploadEvent(owner, form))).status).toBe(400);
+		expect(await mediaKeys()).toEqual(keysBefore);
+	} finally {
+		vi.unstubAllGlobals();
+	}
 });

@@ -21,9 +21,10 @@ test('worker processes an image and semantic search uses its result', async ({ p
 		await page.getByLabel('Email').fill('admin@example.com');
 		await page.getByLabel('Password').fill('a long admin password');
 		await page.getByRole('button', { name: 'Sign in' }).click();
-		await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Add', exact: true })).toBeEnabled();
 		const image = await sharp({ create: { width: 6, height: 6, channels: 3, background: '#3d6345' } }).png().toBuffer();
 		await page.locator('input[type=file]').setInputFiles({ name: 'cat.png', mimeType: 'image/png', buffer: image });
+		await page.getByRole('button', { name: /^Add \d+$/ }).click();
 		await expect.poll(async () => (await (await page.request.get('/api/v1/items')).json()).items[0]?.ai_description, { timeout: 12000 }).toBe('sleepy cat');
 		const result = await (await page.request.get('/api/v1/items?q=spaceship', { timeout: 10000 })).json();
 		expect(result.semanticAvailable).toBe(true);

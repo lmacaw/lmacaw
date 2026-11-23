@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test';
+import { expect, test } from 'vitest';
 import { searchOpenverse } from '../src/lib/server/openverse';
 
 test('preserves source, creator, license and attribution from search', async () => {

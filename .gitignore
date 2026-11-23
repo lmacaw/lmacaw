@@ -3,8 +3,9 @@ node_modules/
 build/
 .env
 .env.*
-!.env.example
 coverage/
 playwright-report/
 test-results/
 .superpowers/
+.dev.vars
+.wrangler/

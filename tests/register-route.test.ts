@@ -1,22 +1,88 @@
-import { afterAll, expect, test } from 'bun:test';
-import { SQL } from 'bun';
-import { randomUUID } from 'node:crypto';
-import { createInvitation, login } from '../src/lib/server/auth';
+import { env } from 'cloudflare:test';
+import { expect, test, vi } from 'vitest';
+import { authenticate, createInvitation, signInWithPassword, upsertAccessAdmin } from '$lib/server/auth';
+import { many, run } from '$lib/server/db';
 import { POST } from '../src/routes/api/v1/register/+server';
+import { eventFor, user } from './fixtures';
 
-const url = process.env.TEST_DATABASE_URL;
-if (!url || !new URL(url).pathname.endsWith('_test')) throw new Error('TEST_DATABASE_URL must point to a test database');
-process.env.DATABASE_URL = url;
-const sql = new SQL(url);
-const id = randomUUID(); const email = `${id}@example.com`;
-afterAll(async () => { await sql`DELETE FROM users WHERE id = ${id} OR email = ${email}`; await sql.close(); });
+const path = '/api/v1/register';
+const password = 'a long password';
+const emailAddress = () => `${crypto.randomUUID()}@example.com`;
 
-test('registers with a valid invitation once', async () => {
-	await sql`INSERT INTO users (id, email, password_hash, is_admin) VALUES (${id}, ${id + '-admin@example.com'}, 'unused', true)`;
-	const token = await createInvitation(sql, id);
-	const request = () => new Request('https://example.test/api/v1/register', { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://example.test' }, body: JSON.stringify({ token, email, password: 'a long member password' }) });
-	const invoke = () => { const req = request(); return POST({ request: req, url: new URL(req.url), getClientAddress: () => '127.0.0.3' } as never); };
-	expect((await invoke()).status).toBe(201);
-	expect(await login(sql, email, 'a long member password')).not.toBeNull();
-	expect((await invoke()).status).toBe(400);
+function register(invitation: unknown, email = emailAddress(), options: { origin?: string; ip?: string } = {}) {
+	const cookies = { set: vi.fn() };
+	const event = eventFor(path, path, null, {
+		method: 'POST',
+		headers: { origin: options.origin ?? 'http://localhost:4173', 'CF-Connecting-IP': options.ip ?? crypto.randomUUID() },
+		body: JSON.stringify({ invitation, email, password })
+	});
+	Object.assign(event, { cookies });
+	return { cookies, response: POST(event) };
+}
+
+async function invite() {
+	const admin = await upsertAccessAdmin(env.DB, emailAddress());
+	return { admin, invitation: await createInvitation(env.DB, admin.id) };
+}
+
+test('registers a member with a password, starts a session, and rejects reuse of the invitation', async () => {
+	const { invitation } = await invite();
+	const email = emailAddress();
+	const { response, cookies } = register(invitation, email.toUpperCase());
+	expect((await response).status).toBe(201);
+	const [cookie, token] = cookies.set.mock.calls[0];
+	expect(cookie).toBe('lmacaw_session');
+	expect(await authenticate(env.DB, token)).toMatchObject({ email, isAdmin: false });
+	const nextToken = await signInWithPassword(env.DB, email, password);
+	expect(nextToken).toBeTruthy();
+	expect(await authenticate(env.DB, nextToken!)).toEqual(await authenticate(env.DB, token));
+
+	const reused = register(invitation);
+	const rejection = await reused.response;
+	expect(rejection.status).toBe(400);
+	expect(await rejection.json()).toEqual({ error: 'Invalid invitation' });
+	expect(reused.cookies.set).not.toHaveBeenCalled();
+});
+
+test('creates only one member when two registrations race for one invitation', async () => {
+	const { invitation } = await invite();
+	const emails = [emailAddress(), emailAddress()];
+	const requests = emails.map((email) => register(invitation, email));
+	const responses = await Promise.all(requests.map(({ response }) => response));
+	expect(responses.map(({ status }) => status).sort()).toEqual([201, 400]);
+	const winner = responses.findIndex(({ status }) => status === 201);
+	expect(await many(env.DB, 'SELECT email FROM users WHERE email IN (?, ?)', ...emails)).toEqual([{ email: emails[winner] }]);
+	expect(requests[winner].cookies.set).toHaveBeenCalledTimes(1);
+	expect(requests[1 - winner].cookies.set).not.toHaveBeenCalled();
+});
+
+test('an email conflict leaves the invitation available for another address', async () => {
+	const { invitation } = await invite();
+	const existing = await user();
+	const duplicate = register(invitation, existing.email.toUpperCase());
+	const response = await duplicate.response;
+	expect(response.status).toBe(400);
+	expect(await response.json()).toEqual({ error: 'Email taken' });
+	expect(duplicate.cookies.set).not.toHaveBeenCalled();
+	expect((await register(invitation).response).status).toBe(201);
+});
+
+test('rejects an expired invitation and invalid registration inputs', async () => {
+	const { admin, invitation } = await invite();
+	await run(env.DB, 'UPDATE invitations SET expires_at = ? WHERE created_by = ?', Date.now() - 1, admin.id);
+	for (const request of [register(invitation), register('garbage'), register(123), register(invitation, 'invalid')]) {
+		expect((await request.response).status).toBe(400);
+		expect(request.cookies.set).not.toHaveBeenCalled();
+	}
+});
+
+test('checks origin first and rate-limits the registration IP', async () => {
+	expect((await register(123, undefined, { origin: 'https://untrusted.example' }).response).status).toBe(403);
+	const { invitation } = await invite();
+	const ip = crypto.randomUUID();
+	await run(env.DB, 'INSERT INTO rate_limits (key, attempts, window_start) VALUES (?, 10, ?)', `register:ip:${ip}`, Date.now());
+	const throttled = register(invitation, undefined, { ip });
+	expect((await throttled.response).status).toBe(429);
+	expect(throttled.cookies.set).not.toHaveBeenCalled();
+	expect((await register(invitation).response).status).toBe(201);
 });

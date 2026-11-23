@@ -1,29 +1,51 @@
-import { afterAll, expect, test } from 'bun:test';
-import { SQL } from 'bun';
-import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import sharp from 'sharp';
-import { createItem, setShared } from '../src/lib/server/library';
-import { FileStorage } from '../src/lib/server/storage';
+import { env } from 'cloudflare:test';
+import { expect, test } from 'vitest';
+import type { User } from '$lib/server/auth';
+import { deleteItem, getVisibleItem, updateItem } from '$lib/server/library';
 import { POST } from '../src/routes/api/v1/items/[id]/copy/+server';
+import { createTestItem, eventFor, png, unsignedEnv, user, webp } from './fixtures';
 
-const url = process.env.TEST_DATABASE_URL;
-if (!url || !new URL(url).pathname.endsWith('_test')) throw new Error('TEST_DATABASE_URL must point to a test database');
-process.env.DATABASE_URL = url;
-const root = await mkdtemp(join(tmpdir(), 'lmacaw-copy-api-')); process.env.MEDIA_ROOT = root;
-const sql = new SQL(url); const owner = randomUUID(); const other = randomUUID();
-afterAll(async () => { await sql`DELETE FROM users WHERE id IN (${owner}, ${other})`; await sql.close(); await rm(root, { recursive: true, force: true }); });
+function copy(actor: User, id: string) {
+	return POST(eventFor('/api/v1/items/[id]/copy', `/api/v1/items/${id}/copy`, actor, { method: 'POST' }, id));
+}
 
-test('only shared items can be copied to another library', async () => {
-	await sql`INSERT INTO users (id, email, password_hash) VALUES (${owner}, ${owner + '@example.com'}, 'unused'), (${other}, ${other + '@example.com'}, 'unused')`;
-	const data = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#ffffff' } }).png().toBuffer();
-	const item = (await createItem(sql, new FileStorage(root), owner, data)).item;
-	const invoke = () => { const request = new Request('https://example.test/api/v1/items/copy', { method: 'POST', headers: { origin: 'https://example.test' } }); return POST({ request, url: new URL(request.url), params: { id: item.id }, locals: { user: { id: other } } } as never); };
-	expect((await invoke()).status).toBe(404);
-	await setShared(sql, owner, item.id, true);
-	const response = await invoke();
+test('copies a shared item, merged text and both R2 objects into the recipient’s private library', async () => {
+	const owner = await user();
+	const recipient = await user();
+	const source = { source: 'https://example.com/image', creator: 'An' };
+	const { item } = await createTestItem(owner, { source, initial: { description: 'Owner text', tags: [], extractedText: null } });
+	await env.DB.prepare(`INSERT INTO item_analysis (item_id, description, suggested_tags, extracted_text, updated_at)
+		VALUES (?, ?, ?, ?, ?)`).bind(item.id, 'AI description', '["suggested"]', 'AI OCR', Date.now()).run();
+	await updateItem(unsignedEnv, owner.id, item.id, { shared: true, favorite: true });
+	const response = await copy(recipient, item.id);
 	expect(response.status).toBe(201);
-	expect((await response.json()).item.storageKey).toBeUndefined();
+	const data = await response.json();
+	expect(data).toMatchObject({ duplicate: false, item: {
+		description: 'Owner text', tags: ['suggested'], extracted_text: 'AI OCR', source_metadata: source,
+		shared: false, favorite: false
+	} });
+	expect(data.item.id).not.toBe(item.id);
+	const saved = await getVisibleItem(env.DB, recipient.id, data.item.id);
+	expect(saved).toMatchObject({ ownerId: recipient.id });
+	expect(saved?.storageKey).not.toBe(item.storageKey);
+	expect(saved?.thumbnailKey).not.toBe(item.thumbnailKey);
+	expect(await getVisibleItem(env.DB, owner.id, data.item.id)).toBeNull();
+	expect(await getVisibleItem(env.DB, owner.id, item.id)).toEqual({ ...item, shared: true });
+	expect(await env.DB.prepare('SELECT content_hash FROM items WHERE id = ?').bind(data.item.id).first())
+		.toEqual(await env.DB.prepare('SELECT content_hash FROM items WHERE id = ?').bind(item.id).first());
+	const duplicate = await copy(recipient, item.id);
+	expect(duplicate.status).toBe(200);
+	expect(await duplicate.json()).toEqual({ ...data, duplicate: true });
+
+	await deleteItem(unsignedEnv, owner.id, item.id);
+	expect(await (await env.MEDIA.get(saved!.storageKey))?.bytes()).toEqual(png);
+	expect(await (await env.MEDIA.get(saved!.thumbnailKey!))?.bytes()).toEqual(webp);
+});
+
+test('returns 404 when copying someone else’s private item', async () => {
+	const owner = await user();
+	const other = await user();
+	const { item } = await createTestItem(owner);
+	expect((await copy(other, item.id)).status).toBe(404);
+	expect(await env.DB.prepare('SELECT id FROM items WHERE owner_id = ?').bind(other.id).first()).toBeNull();
 });

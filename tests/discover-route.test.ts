@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import { GET } from '../src/routes/api/v1/discover/+server';
-import { eventFor as routeEvent } from './fixtures';
+import { createTestItem, eventFor as routeEvent, user } from './fixtures';
 
 function eventFor(params: Record<string, string> = {}, signedIn = true) {
 	const route = '/api/v1/discover';
@@ -47,4 +47,19 @@ test('maps an upstream search failure to 502', async () => {
 	const response = await GET(eventFor({ q: 'cat' }));
 	expect(response.status).toBe(502);
 	expect(await response.json()).toEqual({ error: 'Search unavailable' });
+});
+
+test('marks results the caller already saved', async () => {
+	const [owner, other] = [await user(), await user()];
+	await createTestItem(owner, { source: { source: 'https://images.example/saved' } });
+	await createTestItem(other, { source: { source: 'https://images.example/theirs' } });
+	vi.stubGlobal('fetch', async () => Response.json({ results: [
+		{ id: 'saved-id', url: 'https://images.example/a.png', foreign_landing_url: 'https://images.example/saved' },
+		{ id: 'theirs-id', url: 'https://images.example/b.png', foreign_landing_url: 'https://images.example/theirs' },
+		{ id: 'new-id', url: 'https://images.example/c.png', foreign_landing_url: '' }
+	] }));
+	const route = '/api/v1/discover';
+	const response = await GET(routeEvent(route, `${route}?q=cat`, owner));
+	expect((await response.json()).items.map((item: { id: string; saved: boolean }) => [item.id, item.saved]))
+		.toEqual([['saved-id', true], ['theirs-id', false], ['new-id', false]]);
 });

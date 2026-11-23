@@ -4,6 +4,7 @@
 	import Gallery from '$lib/components/Gallery.svelte';
 	import DetailDialog from '$lib/components/DetailDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 	import type { Collection, Discovery, Item, Scope } from '$lib/types';
 	import { fetchAndUpload, uploadFile } from '$lib/upload';
 	import { sha256Of } from '$lib/thumbnail';
@@ -24,7 +25,7 @@
 	let selectedScope = $state<Scope>('library'), selectedCollection = $state(''), query = $state('');
 	const scope = $derived<Scope>(publicLibrary ? 'shared' : selectedScope);
 	let theme = $state<'system' | 'light' | 'dark'>('system'), menuOpen = $state(false), dragging = $state(false);
-	let items: Item[] = $state([]), loaded = $state(false), hasMore = $state(false), currentPage = 1, semanticAvailable = $state(false);
+	let items: Item[] = $state([]), loaded = $state(false), loadFailed = $state(false), hasMore = $state(false), currentPage = 1, semanticAvailable = $state(false);
 	let discoveries: Discovery[] = $state([]), discovering = $state(false);
 	let collections: Collection[] = $state([]), itemCollections: Collection[] = $state([]);
 	let current: Item | null = $state(null);
@@ -54,14 +55,19 @@
 		try {
 			const response = await fetch(`/api/v1/items?${params}`);
 			if (requestId !== requestNumber) return;
-			if (!response.ok) { notify('Could not load memes.'); return; }
+			if (!response.ok) { failLoad(page); return; }
 			const result = await response.json();
 			if (requestId !== requestNumber) return;
 			const seen = new Set(items.map((item) => item.id));
 			items = page === 1 ? result.items : [...items, ...result.items.filter((item: Item) => !seen.has(item.id))];
 			if (page === 1) semanticAvailable = result.semanticAvailable;
-			hasMore = result.hasMore; currentPage = page; loaded = true;
-		} catch { if (requestId === requestNumber) notify('Could not load memes.'); }
+			hasMore = result.hasMore; currentPage = page; loaded = true; loadFailed = false;
+		} catch { if (requestId === requestNumber) failLoad(page); }
+	}
+	// A failed first page has nothing to show, so it gets an inline retry instead of a toast.
+	function failLoad(page: number) {
+		if (page === 1 && !loaded) loadFailed = true;
+		else notify('Could not load memes.');
 	}
 	function queueSearch() {
 		if (searchTimer) clearTimeout(searchTimer);
@@ -79,7 +85,7 @@
 	function select(next: Scope, collection = '') {
 		closeMenu();
 		selectedScope = next; selectedCollection = collection; query = ''; discoveries = [];
-		items = []; loaded = false; void refresh();
+		items = []; loaded = false; loadFailed = false; void refresh();
 	}
 
 	async function signIn(event: SubmitEvent) {
@@ -289,9 +295,19 @@
 		} catch { notify('Openverse is unavailable. Try again later.'); }
 		finally { discovering = false; }
 	}
+	let savingDiscovery: string[] = $state([]);
 	async function saveDiscovery(item: Discovery) {
-		const response = await fetchAndUpload({ openverse: item.id }).catch(() => null);
-		notify(response?.ok ? 'Saved to your library.' : 'Could not save image.');
+		if (item.saved || savingDiscovery.includes(item.id)) return;
+		savingDiscovery.push(item.id);
+		try {
+			const response = await fetchAndUpload({ openverse: item.id }).catch(() => null);
+			if (!response?.ok) { notify('Could not save image.'); return; }
+			const target = discoveries.find((candidate) => candidate.id === item.id);
+			if (target) target.saved = true;
+			notify((await response.json().catch(() => ({}))).duplicate ? 'Already in your library.' : 'Saved to your library.');
+		} finally {
+			savingDiscovery = savingDiscovery.filter((id) => id !== item.id);
+		}
 	}
 
 	function openForm(kind: 'add' | 'collection' | 'rename') {
@@ -333,7 +349,9 @@
 		// Missing on older browsers and on plain-HTTP origins other than localhost.
 		canCopy = window.isSecureContext && typeof ClipboardItem === 'function' && typeof navigator.clipboard?.write === 'function';
 		if (/Mac|iPhone|iPad/.test(navigator.userAgent)) pasteKey = '⌘V';
-		try { const saved = localStorage.getItem('lmacaw-theme'); if (saved === 'light' || saved === 'dark') setTheme(saved); } catch { /* storage unavailable */ }
+		// app.html already applied the saved theme; sync the toggle with it.
+		const saved = document.documentElement.dataset.theme;
+		if (saved === 'light' || saved === 'dark') theme = saved;
 		if (!showLibrary) return;
 		void refresh();
 		if (publicLibrary) return;
@@ -407,6 +425,9 @@
 				{#if !publicLibrary}
 					<button class="button primary add-button" disabled={!ready} onclick={() => openForm('add')}><Icon name="plus" size={15} />Add</button>
 					{#if ready}<input hidden bind:this={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onchange={(event) => { if (event.currentTarget.files) void stage(event.currentTarget.files); event.currentTarget.value = ''; }} />{/if}
+				{:else}
+					<!-- Public visitors have no sidebar, so the appearance toggle lives here. -->
+					<ThemeToggle {theme} ontheme={setTheme} disabled={!ready} />
 				{/if}
 			</header>
 
@@ -420,7 +441,7 @@
 								<img src={`https://api.openverse.org/v1/images/${item.id}/thumb/`} alt={item.title || 'Openverse image'} loading="lazy" referrerpolicy="no-referrer" />
 								<div class="discover-overlay">
 									<span class="discover-credit">{item.attribution || item.title}</span>
-									<button class="tile-action labeled" aria-label={`Save ${item.title || 'image'}`} onclick={() => saveDiscovery(item)}><Icon name="bookmark" size={14} />Save</button>
+									<button class="tile-action labeled" aria-label={`${item.saved ? 'Saved' : 'Save'} ${item.title || 'image'}`} disabled={item.saved || savingDiscovery.includes(item.id)} onclick={() => saveDiscovery(item)}><Icon name="bookmark" size={14} />{item.saved ? 'Saved' : savingDiscovery.includes(item.id) ? 'Saving…' : 'Save'}</button>
 								</div>
 							</li>
 						{/each}
@@ -431,6 +452,8 @@
 			{:else if items.length}
 				<Gallery {items} {canCopy} {publicLibrary} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} />
 				{#if hasMore}<div class="more"><button class="button ghost" onclick={() => refresh(currentPage + 1)}>Load more</button></div>{/if}
+			{:else if loadFailed}
+				<div class="empty"><p>Could not load memes.</p><button class="button ghost" onclick={() => { loadFailed = false; void refresh(); }}>Retry</button></div>
 			{:else if loaded}
 				<div class="empty">
 					{#if query}<p>No matches.</p>
@@ -445,7 +468,7 @@
 	</div>
 
 	<DetailDialog
-		item={current} {canCopy} {publicLibrary} readonly={scope === 'shared'} collections={itemCollections} message={current ? message : ''} aiEnabled={data.aiEnabled}
+		item={current} {canCopy} {publicLibrary} {publicMode} readonly={scope === 'shared'} collections={itemCollections} message={current ? message : ''} aiEnabled={data.aiEnabled}
 		onclose={() => (current = null)} oncopy={copyImage} onupdate={updateItem} ondelete={removeItem}
 		onsave={saveShared} onretry={retryAi} ontogglecollection={toggleCollection}
 	/>

@@ -21,7 +21,7 @@
 	let selectedScope = $state<Scope>('library'), selectedCollection = $state(''), query = $state('');
 	const scope = $derived<Scope>(publicLibrary ? 'shared' : selectedScope);
 	let theme = $state<'system' | 'light' | 'dark'>('system'), menuOpen = $state(false), dragging = $state(false);
-	let items: Item[] = $state([]), loaded = $state(false), hasMore = $state(false), currentPage = 1, semanticAvailable = $state(false);
+	let items: Item[] = $state([]), loaded = $state(false), loadFailed = $state(false), hasMore = $state(false), currentPage = 1, semanticAvailable = $state(false);
 	let discoveries: Discovery[] = $state([]), discovering = $state(false);
 	let collections: Collection[] = $state([]), itemCollections: Collection[] = $state([]);
 	let current: Item | null = $state(null);
@@ -51,14 +51,19 @@
 		try {
 			const response = await fetch(`/api/v1/items?${params}`);
 			if (requestId !== requestNumber) return;
-			if (!response.ok) { notify('Could not load memes.'); return; }
+			if (!response.ok) { failLoad(page); return; }
 			const result = await response.json();
 			if (requestId !== requestNumber) return;
 			const seen = new Set(items.map((item) => item.id));
 			items = page === 1 ? result.items : [...items, ...result.items.filter((item: Item) => !seen.has(item.id))];
 			if (page === 1) semanticAvailable = result.semanticAvailable;
-			hasMore = result.hasMore; currentPage = page; loaded = true;
-		} catch { if (requestId === requestNumber) notify('Could not load memes.'); }
+			hasMore = result.hasMore; currentPage = page; loaded = true; loadFailed = false;
+		} catch { if (requestId === requestNumber) failLoad(page); }
+	}
+	// A failed first page has nothing to show, so it gets an inline retry instead of a toast.
+	function failLoad(page: number) {
+		if (page === 1 && !loaded) loadFailed = true;
+		else notify('Could not load memes.');
 	}
 	function queueSearch() {
 		if (searchTimer) clearTimeout(searchTimer);
@@ -76,7 +81,7 @@
 	function select(next: Scope, collection = '') {
 		closeMenu();
 		selectedScope = next; selectedCollection = collection; query = ''; discoveries = [];
-		items = []; loaded = false; void refresh();
+		items = []; loaded = false; loadFailed = false; void refresh();
 	}
 
 	async function signIn(event: SubmitEvent) {
@@ -388,6 +393,8 @@
 			{:else if items.length}
 				<Gallery {items} {canCopy} {publicLibrary} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} />
 				{#if hasMore}<div class="more"><button class="button ghost" onclick={() => refresh(currentPage + 1)}>Load more</button></div>{/if}
+			{:else if loadFailed}
+				<div class="empty"><p>Could not load memes.</p><button class="button ghost" onclick={() => { loadFailed = false; void refresh(); }}>Retry</button></div>
 			{:else if loaded}
 				<div class="empty">
 					{#if query}<p>No matches.</p>

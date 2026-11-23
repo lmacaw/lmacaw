@@ -44,6 +44,11 @@ async function makeThumbnail(bitmap: ImageBitmap): Promise<Blob> {
 	return thumbnail;
 }
 
+export async function sha256Of(file: Blob): Promise<string> {
+	const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 export async function prepareUpload(file: Blob): Promise<{ thumbnail: Blob; sha256: string; width: number; height: number }> {
 	const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
 	const { width, height } = bitmap;
@@ -54,7 +59,6 @@ export async function prepareUpload(file: Blob): Promise<{ thumbnail: Blob; sha2
 		bitmap.close();
 	}
 
-	const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
-	const sha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+	const sha256 = await sha256Of(file);
 	return { thumbnail, sha256, width, height };
 }

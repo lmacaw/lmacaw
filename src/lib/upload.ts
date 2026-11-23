@@ -13,8 +13,8 @@ export async function uploadFile(file: Blob, extra?: { openverse?: string; colle
 	return fetch('/api/v1/items', { method: 'POST', body });
 }
 
-export async function fetchAndUpload(source: { url: string } | { openverse: string }, collection?: string): Promise<Response> {
+export async function fetchAndUpload(source: { url: string } | { openverse: string }): Promise<Response> {
 	const response = await fetch(`/api/v1/fetch?${new URLSearchParams(source)}`);
 	if (!response.ok) return response;
-	return uploadFile(await response.blob(), { collection, ...('openverse' in source ? source : {}) });
+	return uploadFile(await response.blob(), 'openverse' in source ? source : undefined);
 }

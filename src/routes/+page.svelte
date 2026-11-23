@@ -118,12 +118,18 @@
 		invitationLink = `${window.location.origin}/invite#${(await response.json()).token}`;
 	}
 
+	// Adds land in the open collection too; other views switch to the library to show them.
+	const addTarget = () => (scope === 'collection' ? selectedCollection : undefined);
+	async function showAdded() {
+		if (scope === 'library' || scope === 'collection') await refresh(); else select('library');
+	}
+
 	async function addFiles(files: FileList | File[]) {
-		const list = Array.from(files);
+		const list = Array.from(files), collection = addTarget();
 		let added = 0, duplicates = 0, failed: string[] = [];
 		for (const file of list) {
 			try {
-				const response = await uploadFile(file);
+				const response = await uploadFile(file, { collection });
 				if (!response.ok) failed.push(file.name);
 				else if ((await response.json()).duplicate) duplicates++;
 				else added++;
@@ -132,7 +138,7 @@
 		if (failed.length) notify(`Could not add ${failed.join(', ')}.`);
 		else if (duplicates && !added) notify('Already in your library.');
 		else notify(added === 1 ? 'Added.' : `Added ${added}.`);
-		if (scope !== 'library') select('library'); else await refresh();
+		await showAdded();
 	}
 
 	async function openItem(item: Item) {
@@ -234,17 +240,17 @@
 				const urls = [...new Set(form.value.split('\n').map((line) => line.trim()).filter(Boolean))];
 				if (!urls.length) { form.error = 'Paste at least one image URL.'; return; }
 				if (urls.length > 50) { form.error = 'Paste up to 50 URLs at a time.'; return; }
-				const failed: string[] = []; let added = 0, duplicates = 0;
+				const failed: string[] = [], collection = addTarget(); let added = 0, duplicates = 0;
 				for (const [index, url] of urls.entries()) {
 					form.progress = `Importing ${index + 1} of ${urls.length}…`;
-					const attempt = () => fetchAndUpload({ url }).catch(() => null);
+					const attempt = () => fetchAndUpload({ url }, collection).catch(() => null);
 					let response = await attempt();
 					if (!response?.ok) response = await attempt(); // one retry: remote hosts fail now and then
 					if (!response?.ok) { failed.push(url); continue; }
 					if ((await response.json()).duplicate) duplicates++; else added++;
 				}
 				form.progress = '';
-				if (added || duplicates) { if (scope !== 'library') select('library'); else await refresh(); }
+				if (added || duplicates) await showAdded();
 				const summary = [added && `Added ${added}.`, duplicates && `${duplicates} already in your library.`].filter(Boolean).join(' ');
 				if (!failed.length) { formDialog.close(); notify(summary || 'Added.'); return; }
 				form.value = failed.join('\n');

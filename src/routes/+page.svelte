@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { onMount, tick } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import Gallery from '$lib/components/Gallery.svelte';
 	import DetailDialog from '$lib/components/DetailDialog.svelte';
@@ -8,6 +10,7 @@
 	import type { Collection, Discovery, Item, Scope } from '$lib/types';
 	import { fetchAndUpload, uploadFile } from '$lib/upload';
 	import { sha256Of } from '$lib/thumbnail';
+	import { viewFromUrl, viewHref } from '$lib/view';
 
 	let { data } = $props();
 	const user = $derived(data.user);
@@ -22,7 +25,9 @@
 	let canCopy = $state(true), menuButton: HTMLButtonElement = $state(undefined!);
 	let pasteKey = $state('Ctrl+V'), dropActive = $state(false);
 	let staged: { id: string; file: File; hash: string; preview: string; failed: boolean }[] = $state([]), stageNote = $state('');
-	let selectedScope = $state<Scope>('library'), selectedCollection = $state(''), query = $state('');
+	const view = $derived(viewFromUrl(page.url));
+	const selectedScope = $derived(view.scope), selectedCollection = $derived(view.collection);
+	let query = $state('');
 	const scope = $derived<Scope>(publicLibrary ? 'shared' : selectedScope);
 	let theme = $state<'system' | 'light' | 'dark'>('system'), menuOpen = $state(false), dragging = $state(false);
 	let items: Item[] = $state([]), loaded = $state(false), loadFailed = $state(false), hasMore = $state(false), currentPage = 1, semanticAvailable = $state(false);
@@ -82,10 +87,19 @@
 		// Focus after the workspace stops being inert.
 		menuOpen = false; void tick().then(() => menuButton?.focus());
 	}
+	function resetView() {
+		query = ''; discoveries = []; items = []; loaded = false; loadFailed = false; void refresh();
+	}
+	// A new view in the URL (a click, Back, or a link to "/") starts fresh; picking the current one again resets it.
+	$effect(() => {
+		void scope; void selectedCollection;
+		if (showLibrary) untrack(resetView);
+	});
 	function select(next: Scope, collection = '') {
 		closeMenu();
-		selectedScope = next; selectedCollection = collection; query = ''; discoveries = [];
-		items = []; loaded = false; loadFailed = false; void refresh();
+		const href = viewHref(next, collection);
+		if (href === page.url.pathname + page.url.search) resetView();
+		else void goto(href, { keepFocus: true, noScroll: true });
 	}
 
 	async function signIn(event: SubmitEvent) {
@@ -352,9 +366,7 @@
 		// app.html already applied the saved theme; sync the toggle with it.
 		const saved = document.documentElement.dataset.theme;
 		if (saved === 'light' || saved === 'dark') theme = saved;
-		if (!showLibrary) return;
-		void refresh();
-		if (publicLibrary) return;
+		if (!showLibrary || publicLibrary) return;
 		void refreshCollections();
 		const paste = (event: ClipboardEvent) => {
 			const target = event.target;
@@ -408,7 +420,7 @@
 		<main class="workspace" inert={menuOpen}>
 			<header class="topbar">
 				{#if publicLibrary}
-					<h1 class="brand"><img class="brand-mark" src="/favicon.svg" alt="" width="24" height="24" />Lmacaw</h1>
+					<h1><a class="brand" href="/"><img class="brand-mark" src="/favicon.svg" alt="" width="24" height="24" />Lmacaw</a></h1>
 				{:else}
 					<button class="icon-button menu-button" aria-label="Menu" aria-expanded={menuOpen} bind:this={menuButton} onclick={() => (menuOpen = true)}><Icon name="menu" /></button>
 					<h1>{title}</h1>

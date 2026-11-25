@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 import type { User } from '$lib/server/auth';
-import { getItemDto, listItems, updateItem } from '$lib/server/library';
+import { anonPageLimit, getItemDto, listItems, updateItem } from '$lib/server/library';
 import type { Item } from '$lib/types';
 import { GET as list, POST as upload } from '../src/routes/api/v1/items/+server';
 import { DELETE as remove, PATCH as patch } from '../src/routes/api/v1/items/[id]/+server';
@@ -100,11 +100,13 @@ test('lets every admin see and manage items another admin uploaded (#29)', async
 });
 
 test('caps anonymous page depth but not signed-in paging', async () => {
-	const deep = await list(listEvent(null, '?scope=shared&page=26', publicBindings));
+	const deep = await list(listEvent(null, `?scope=shared&page=${anonPageLimit + 1}`, publicBindings));
 	expect(deep.status).toBe(400);
 	expect(await deep.json()).toEqual({ error: 'Page too deep' });
-	expect((await list(listEvent(null, '?scope=shared&page=25', publicBindings))).status).toBe(200);
-	expect((await list(listEvent(await user(true), '?scope=shared&page=26', publicBindings))).status).toBe(200);
+	const last = await list(listEvent(null, `?scope=shared&page=${anonPageLimit}`, publicBindings));
+	expect(last.status).toBe(200);
+	expect((await last.json()).hasMore).toBe(false);
+	expect((await list(listEvent(await user(true), `?scope=shared&page=${anonPageLimit + 1}`, publicBindings))).status).toBe(200);
 });
 
 test('lets anonymous unsearched shared listings be cached briefly, nothing else', async () => {

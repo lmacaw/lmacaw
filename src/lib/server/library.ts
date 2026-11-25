@@ -124,6 +124,9 @@ export async function getVisibleItem(db: D1Database, owner: string | null | unde
 	return row && mapRow(row);
 }
 
+// Anonymous listings use OFFSET paging, so a deep page reads every row before it: cap at ~5,000 items whatever the page size.
+export const anonPageLimit = Math.ceil(5000 / pageSize);
+
 export async function listItems(env: Env, user: User | null, { scope, collection, query = '', page = 1 }: ListOptions):
 	Promise<{ items: ItemDto[]; hasMore: boolean }> {
 	const filters: string[] = [];

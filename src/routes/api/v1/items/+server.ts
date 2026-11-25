@@ -2,15 +2,13 @@ import { json } from '@sveltejs/kit';
 import { authMode, getEnv } from '$lib/server/env';
 import { addToCollection } from '$lib/server/collections';
 import { one } from '$lib/server/db';
-import { createItem, getItemDto, InvalidItemError, libraryOwner, listItems, validItemId, type SourceMetadata } from '$lib/server/library';
+import { anonPageLimit, createItem, getItemDto, InvalidItemError, libraryOwner, listItems, validItemId, type SourceMetadata } from '$lib/server/library';
 import { getOpenverseImage } from '$lib/server/openverse';
 import { requireRole, trustedOrigin } from '$lib/server/request';
 import type { RequestHandler } from './$types';
 
 const bodyLimit = 21 * 1024 * 1024 + 300 * 1024;
 const privateHeaders = { 'cache-control': 'private, no-store' };
-// Anonymous listings use OFFSET paging, so a deep page reads every row before it. 25 pages x 200 = 5,000 items.
-const anonPageLimit = 25;
 // Vary on Cookie so a browser never serves a signed-in caller the anonymous copy.
 const publicListHeaders = { 'cache-control': 'public, max-age=60', vary: 'Cookie' };
 
@@ -31,6 +29,8 @@ export const GET: RequestHandler = async (event) => {
 
 	const query = (url.searchParams.get('q') ?? '').trim().slice(0, 200);
 	const result = await listItems(env, caller, { scope, collection: collection?.toLowerCase(), query, page });
+	// The last allowed page reports no more, so infinite scroll stops instead of hitting the 400.
+	if (caller === null && page >= anonPageLimit) result.hasMore = false;
 	// Only the anonymous unsearched shared feed is the same for everyone; search stays uncached to keep the CDN key space small.
 	const headers = caller === null && !query ? publicListHeaders : privateHeaders;
 	return json({ ...result, semanticAvailable: false }, { headers });

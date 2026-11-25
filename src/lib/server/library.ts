@@ -90,6 +90,8 @@ function mapDto(owner: string | null | undefined, row: ItemWithAnalysis): ItemDt
 	return {
 		id: row.id,
 		content_type: row.content_type,
+		width: row.width,
+		height: row.height,
 		shared: Boolean(row.shared),
 		favorite: owner !== undefined && (owner === null || row.owner_id === owner) && Boolean(row.favorite),
 		description: row.description,

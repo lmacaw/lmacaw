@@ -52,9 +52,20 @@ test('presigns media only when R2 credentials are configured', async () => {
 	expect(url.host).toBe('acc.r2.cloudflarestorage.com');
 	expect(url.pathname).toBe(`/b/${key}`);
 	expect(url.searchParams.get('X-Amz-Signature')).toBeTruthy();
-	expect(url.searchParams.get('X-Amz-Expires')).toBe('600');
+	expect(url.searchParams.get('X-Amz-Expires')).toBe('7200');
+	expect(url.searchParams.get('response-cache-control')).toBe('private, max-age=31536000, immutable');
 	expect(url.searchParams.get('response-content-type')).toBe('image/png');
 	expect(url.searchParams.get('response-content-disposition')).toBe('attachment; filename="ab.png"');
+});
+
+test('signs the same URL for a whole hour so the browser cache can hit', async () => {
+	const key = newKey();
+	const credentials = { ...env, R2_ACCOUNT_ID: 'acc', R2_BUCKET: 'b', R2_ACCESS_KEY_ID: 'id', R2_SECRET_ACCESS_KEY: 'secret' };
+	const hour = Date.UTC(2026, 10, 25, 12);
+	const first = await mediaUrl(credentials, key, undefined, undefined, hour + 1_000);
+	expect(await mediaUrl(credentials, key, undefined, undefined, hour + 3_599_000)).toBe(first);
+	expect(new URL(first!).searchParams.get('X-Amz-Date')).toBe('20261125T120000Z');
+	expect(await mediaUrl(credentials, key, undefined, undefined, hour + 3_600_000)).not.toBe(first);
 });
 
 test('stores a stream of declared length and rejects a wrong length', async () => {

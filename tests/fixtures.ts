@@ -12,6 +12,7 @@ import { GET as fetchImage } from '../src/routes/api/v1/fetch/+server';
 import * as items from '../src/routes/api/v1/items/+server';
 import * as item from '../src/routes/api/v1/items/[id]/+server';
 import { POST as copy } from '../src/routes/api/v1/items/[id]/copy/+server';
+import { POST as retryAi } from '../src/routes/api/v1/items/[id]/retry-ai/+server';
 
 export const png = new Uint8Array([
 	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
@@ -146,6 +147,7 @@ export function memberRouteCases(bindings?: Partial<Env>) {
 		['PATCH item', () => item.PATCH(event('/api/v1/items/[id]', 'PATCH', itemPath, id))],
 		['DELETE item', () => item.DELETE(event('/api/v1/items/[id]', 'DELETE', itemPath, id))],
 		['POST copy', () => copy(event('/api/v1/items/[id]/copy', 'POST', `${itemPath}/copy`, id))],
+		['POST retry-ai', () => retryAi(event('/api/v1/items/[id]/retry-ai', 'POST', `${itemPath}/retry-ai`, id))],
 		['GET collections', () => collections.GET(event(collectionsRoute, 'GET'))],
 		['POST collections', () => collections.POST(event(collectionsRoute, 'POST'))],
 		['PATCH collection', () => collection.PATCH(event('/api/v1/collections/[id]', 'PATCH', collectionPath, id))],

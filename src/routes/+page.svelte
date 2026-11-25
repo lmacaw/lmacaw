@@ -11,6 +11,8 @@
 	import { fetchAndUpload, uploadFile } from '$lib/upload';
 	import { sha256Of } from '$lib/thumbnail';
 	import { viewFromUrl, viewHref } from '$lib/view';
+	import { appendPage } from '$lib/paging';
+	import type { Attachment } from 'svelte/attachments';
 
 	let { data } = $props();
 	const user = $derived(data.user);
@@ -30,7 +32,7 @@
 	let query = $state('');
 	const scope = $derived<Scope>(publicLibrary ? 'shared' : selectedScope);
 	let theme = $state<'system' | 'light' | 'dark'>('system'), menuOpen = $state(false), dragging = $state(false);
-	let items: Item[] = $state([]), loaded = $state(false), loadFailed = $state(false), hasMore = $state(false), currentPage = 1, semanticAvailable = $state(false);
+	let items: Item[] = $state([]), loaded = $state(false), loadFailed = $state(false), hasMore = $state(false), loadingMore = $state(false), moreFailed = $state(false), currentPage = 1, semanticAvailable = $state(false);
 	let discoveries: Discovery[] = $state([]), discovering = $state(false);
 	let collections: Collection[] = $state([]), itemCollections: Collection[] = $state([]);
 	let current: Item | null = $state(null);
@@ -52,26 +54,39 @@
 		return fetch(path, body === undefined ? { method } : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 	}
 
-	async function refresh(page = 1) {
+	// Loads pages first..last; a reload after a change refetches every loaded page so the scroll position survives.
+	async function refresh(first = 1, last = first) {
 		if (scope === 'discover') return;
 		const requestId = ++requestNumber;
-		const params = new URLSearchParams({ scope: scope === 'collection' ? 'library' : scope, q: query, page: String(page) });
-		if (scope === 'collection') params.set('collection', selectedCollection);
+		loadingMore = first > 1; moreFailed = false;
+		const pageUrl = (page: number) => {
+			const params = new URLSearchParams({ scope: scope === 'collection' ? 'library' : scope, q: query, page: String(page) });
+			if (scope === 'collection') params.set('collection', selectedCollection);
+			return `/api/v1/items?${params}`;
+		};
 		try {
-			const response = await fetch(`/api/v1/items?${params}`);
+			const responses = await Promise.all(Array.from({ length: last - first + 1 }, (_, index) => fetch(pageUrl(first + index))));
 			if (requestId !== requestNumber) return;
-			if (!response.ok) { failLoad(page); return; }
-			const result = await response.json();
+			if (responses.some((response) => !response.ok)) { failLoad(first); return; }
+			const results = await Promise.all(responses.map((response) => response.json()));
 			if (requestId !== requestNumber) return;
-			const seen = new Set(items.map((item) => item.id));
-			items = page === 1 ? result.items : [...items, ...result.items.filter((item: Item) => !seen.has(item.id))];
-			if (page === 1) semanticAvailable = result.semanticAvailable;
-			hasMore = result.hasMore; currentPage = page; loaded = true; loadFailed = false;
-		} catch { if (requestId === requestNumber) failLoad(page); }
+			items = results.reduce((all: Item[], result) => appendPage(all, result.items), first === 1 ? [] : items);
+			if (first === 1) semanticAvailable = results[0].semanticAvailable;
+			hasMore = results[results.length - 1].hasMore; currentPage = last; loaded = true; loadFailed = false;
+		} catch { if (requestId === requestNumber) failLoad(first); }
+		finally { if (requestId === requestNumber) loadingMore = false; }
 	}
+	const reload = () => refresh(1, currentPage);
+	// The next page loads about a screen before the end; the sentinel is re-created after each page, so tall screens keep filling.
+	const nearEnd: Attachment = (node) => {
+		const observer = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) void refresh(currentPage + 1); }, { rootMargin: '100% 0px' });
+		observer.observe(node);
+		return () => observer.disconnect();
+	};
 	// A failed first page has nothing to show, so it gets an inline retry instead of a toast.
 	function failLoad(page: number) {
 		if (page === 1 && !loaded) loadFailed = true;
+		else if (page > 1) { moreFailed = true; notify('Could not load more memes.'); }
 		else notify('Could not load memes.');
 	}
 	function queueSearch() {
@@ -241,7 +256,7 @@
 		items = items.map((candidate) => (candidate.id === item.id ? local : candidate));
 		if (current?.id === item.id) current = local;
 		if ('description' in patch) notify('Saved.');
-		await refresh();
+		await reload();
 		// Keep the open item even if it no longer matches the current view (e.g. unfavorited in Favorites).
 		if (current?.id === item.id) current = items.find((candidate) => candidate.id === item.id) ?? local;
 	}
@@ -252,13 +267,13 @@
 			: await fetch(`/api/v1/collections/${collection.id}/items?${new URLSearchParams({ itemId: current.id })}`, { method: 'DELETE' });
 		if (!response.ok) { notify('Could not update collection.'); return; }
 		itemCollections = itemCollections.map((entry) => (entry.id === collection.id ? { ...entry, hasItem: checked } : entry));
-		if (scope === 'collection') await refresh();
+		if (scope === 'collection') await reload();
 	}
 	async function removeItem(item: Item) {
 		if (!confirm('Delete this meme? This cannot be undone.')) return;
 		const response = await fetch(`/api/v1/items/${item.id}`, { method: 'DELETE' });
 		if (!response.ok) { notify('Could not delete meme.'); return; }
-		current = null; await refresh();
+		current = null; await reload();
 	}
 	// Clipboards accept PNG, not GIF, so animated GIFs copy their first frame only.
 	async function pngOf(item: Item): Promise<Blob> {
@@ -294,7 +309,7 @@
 		const response = await fetch(`/api/v1/items/${item.id}/retry-ai`, { method: 'POST' });
 		if (!response.ok) { notify('Could not retry AI.'); return; }
 		notify('AI analysis queued.');
-		await refresh();
+		await reload();
 		if (current?.id === item.id) current = items.find((candidate) => candidate.id === item.id) ?? { ...item, ai_state: 'pending' };
 	}
 
@@ -450,7 +465,7 @@
 					<ul class="gallery" aria-label="Openverse results">
 						{#each discoveries as item (item.id)}
 							<li class="tile discover-tile">
-								<img src={`https://api.openverse.org/v1/images/${item.id}/thumb/`} alt={item.title || 'Openverse image'} loading="lazy" referrerpolicy="no-referrer" />
+								<img src={`https://api.openverse.org/v1/images/${item.id}/thumb/`} alt={item.title || 'Openverse image'} loading="lazy" decoding="async" referrerpolicy="no-referrer" onload={(event) => event.currentTarget.classList.add('ready')} />
 								<div class="discover-overlay">
 									<span class="discover-credit">{item.attribution || item.title}</span>
 									<button class="tile-action labeled" aria-label={`${item.saved ? 'Saved' : 'Save'} ${item.title || 'image'}`} disabled={item.saved || savingDiscovery.includes(item.id)} onclick={() => saveDiscovery(item)}><Icon name="bookmark" size={14} />{item.saved ? 'Saved' : savingDiscovery.includes(item.id) ? 'Saving…' : 'Save'}</button>
@@ -462,8 +477,9 @@
 					<div class="empty"><p>{discovering ? 'Searching…' : 'Search openly licensed images on Openverse.'}</p><p class="hint">Results may include few memes. Check each license at its source.</p></div>
 				{/if}
 			{:else if items.length}
-				<Gallery {items} {canCopy} {publicLibrary} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} />
-				{#if hasMore}<div class="more"><button class="button ghost" onclick={() => refresh(currentPage + 1)}>Load more</button></div>{/if}
+				<Gallery {items} loading={loadingMore} {canCopy} {publicLibrary} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} />
+				{#if hasMore && moreFailed}<div class="more"><button class="button ghost" onclick={() => refresh(currentPage + 1)}>Load more</button></div>
+				{:else if hasMore && !loadingMore}<div class="sentinel" aria-hidden="true" {@attach nearEnd}></div>{/if}
 			{:else if loadFailed}
 				<div class="empty"><p>Could not load memes.</p><button class="button ghost" onclick={() => { loadFailed = false; void refresh(); }}>Retry</button></div>
 			{:else if loaded}

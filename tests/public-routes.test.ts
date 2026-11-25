@@ -2,7 +2,7 @@ import { env } from 'cloudflare:test';
 import { expect, test } from 'vitest';
 import type { User } from '$lib/server/auth';
 import { createCollection } from '$lib/server/collections';
-import { getItemDto, listItems, updateItem } from '$lib/server/library';
+import { anonPageLimit, getItemDto, listItems, updateItem } from '$lib/server/library';
 import type { Item } from '$lib/types';
 import { POST as collect } from '../src/routes/api/v1/collections/[id]/items/+server';
 import { GET as list, POST as upload } from '../src/routes/api/v1/items/+server';
@@ -115,4 +115,24 @@ test('lets an admin collect and list an item another admin uploaded (#29, #31)',
 
 	const listed = await list(publicEventFor(itemsRoute, `${itemsRoute}?scope=collection&collection=${id}`, second));
 	expect((await listed.json()).items.map(({ id }: Item) => id)).toEqual([item.id]);
+});
+
+test('caps anonymous page depth but not signed-in paging', async () => {
+	const deep = await list(listEvent(null, `?scope=shared&page=${anonPageLimit + 1}`, publicBindings));
+	expect(deep.status).toBe(400);
+	expect(await deep.json()).toEqual({ error: 'Page too deep' });
+	const last = await list(listEvent(null, `?scope=shared&page=${anonPageLimit}`, publicBindings));
+	expect(last.status).toBe(200);
+	expect((await last.json()).hasMore).toBe(false);
+	expect((await list(listEvent(await user(true), `?scope=shared&page=${anonPageLimit + 1}`, publicBindings))).status).toBe(200);
+});
+
+test('lets anonymous unsearched shared listings be cached briefly, nothing else', async () => {
+	const anon = await list(listEvent(null, '?scope=shared', publicBindings));
+	expect(anon.headers.get('cache-control')).toBe('public, max-age=60');
+	expect(anon.headers.get('vary')).toBe('Cookie');
+	const search = await list(listEvent(null, '?scope=shared&q=cat', publicBindings));
+	expect(search.headers.get('cache-control')).toBe('private, no-store');
+	const admin = await list(listEvent(await user(true), '?scope=shared', publicBindings));
+	expect(admin.headers.get('cache-control')).toBe('private, no-store');
 });

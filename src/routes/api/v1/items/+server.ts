@@ -2,13 +2,15 @@ import { json } from '@sveltejs/kit';
 import { authMode, getEnv } from '$lib/server/env';
 import { addToCollection } from '$lib/server/collections';
 import { one } from '$lib/server/db';
-import { createItem, getItemDto, InvalidItemError, libraryOwner, listItems, validItemId, type SourceMetadata } from '$lib/server/library';
+import { anonPageLimit, createItem, getItemDto, InvalidItemError, libraryOwner, listItems, validItemId, type SourceMetadata } from '$lib/server/library';
 import { getOpenverseImage } from '$lib/server/openverse';
 import { requireRole, trustedOrigin } from '$lib/server/request';
 import type { RequestHandler } from './$types';
 
 const bodyLimit = 21 * 1024 * 1024 + 300 * 1024;
 const privateHeaders = { 'cache-control': 'private, no-store' };
+// Vary on Cookie so a browser never serves a signed-in caller the anonymous copy.
+const publicListHeaders = { 'cache-control': 'public, max-age=60', vary: 'Cookie' };
 
 export const GET: RequestHandler = async (event) => {
 	const { url, platform } = event;
@@ -21,16 +23,17 @@ export const GET: RequestHandler = async (event) => {
 	if (!Number.isInteger(page) || page < 1 || page > 10_000) {
 		return json({ error: 'Invalid page' }, { status: 400 });
 	}
+	if (caller === null && page > anonPageLimit) return json({ error: 'Page too deep' }, { status: 400 });
 	const collection = url.searchParams.get('collection');
 	if (collection !== null && !validItemId(collection)) return json({ error: 'Invalid collection' }, { status: 400 });
 
-	const result = await listItems(env, caller, {
-		scope,
-		collection: collection?.toLowerCase(),
-		query: (url.searchParams.get('q') ?? '').trim().slice(0, 200),
-		page
-	});
-	return json({ ...result, semanticAvailable: false }, { headers: privateHeaders });
+	const query = (url.searchParams.get('q') ?? '').trim().slice(0, 200);
+	const result = await listItems(env, caller, { scope, collection: collection?.toLowerCase(), query, page });
+	// The last allowed page reports no more, so infinite scroll stops instead of hitting the 400.
+	if (caller === null && page >= anonPageLimit) result.hasMore = false;
+	// Only the anonymous unsearched shared feed is the same for everyone; search stays uncached to keep the CDN key space small.
+	const headers = caller === null && !query ? publicListHeaders : privateHeaders;
+	return json({ ...result, semanticAvailable: false }, { headers });
 };
 
 export const POST: RequestHandler = async (event) => {

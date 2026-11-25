@@ -49,7 +49,7 @@ export async function sha256Of(file: Blob): Promise<string> {
 	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export async function prepareUpload(file: Blob): Promise<{ thumbnail: Blob; sha256: string; width: number; height: number }> {
+export async function prepareUpload(file: Blob, knownHash?: string): Promise<{ thumbnail: Blob; sha256: string; width: number; height: number }> {
 	const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
 	const { width, height } = bitmap;
 	let thumbnail: Blob;
@@ -59,6 +59,6 @@ export async function prepareUpload(file: Blob): Promise<{ thumbnail: Blob; sha2
 		bitmap.close();
 	}
 
-	const sha256 = await sha256Of(file);
+	const sha256 = knownHash ?? await sha256Of(file);
 	return { thumbnail, sha256, width, height };
 }

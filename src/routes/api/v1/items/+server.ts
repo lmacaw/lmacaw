@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit';
 import { authMode, getEnv } from '$lib/server/env';
 import { addToCollection } from '$lib/server/collections';
 import { one } from '$lib/server/db';
-import { anonPageLimit, createItem, getItemDto, InvalidItemError, libraryOwner, listItems, validItemId, type SourceMetadata } from '$lib/server/library';
+import { anonPageLimit, createItem, decodeCursor, getItemDto, InvalidItemError, libraryOwner, listItems, validItemId, type SourceMetadata } from '$lib/server/library';
 import { getOpenverseImage } from '$lib/server/openverse';
 import { requireRole, trustedOrigin } from '$lib/server/request';
 import type { RequestHandler } from './$types';
@@ -23,14 +23,18 @@ export const GET: RequestHandler = async (event) => {
 	if (!Number.isInteger(page) || page < 1 || page > 10_000) {
 		return json({ error: 'Invalid page' }, { status: 400 });
 	}
-	if (caller === null && page > anonPageLimit) return json({ error: 'Page too deep' }, { status: 400 });
+	// ?cursor (from nextCursor) replaces ?page; ?page stays for older clients, with OFFSET and the anonymous cap.
+	const cursorParam = url.searchParams.get('cursor');
+	const cursor = cursorParam === null ? null : decodeCursor(cursorParam);
+	if (cursorParam !== null && !cursor) return json({ error: 'Invalid cursor' }, { status: 400 });
+	if (!cursor && caller === null && page > anonPageLimit) return json({ error: 'Page too deep' }, { status: 400 });
 	const collection = url.searchParams.get('collection');
 	if (collection !== null && !validItemId(collection)) return json({ error: 'Invalid collection' }, { status: 400 });
 
 	const query = (url.searchParams.get('q') ?? '').trim().slice(0, 200);
-	const result = await listItems(env, caller, { scope, collection: collection?.toLowerCase(), query, page });
+	const result = await listItems(env, caller, { scope, collection: collection?.toLowerCase(), query, page, cursor });
 	// The last allowed page reports no more, so infinite scroll stops instead of hitting the 400.
-	if (caller === null && page >= anonPageLimit) result.hasMore = false;
+	if (!cursor && caller === null && page >= anonPageLimit) Object.assign(result, { hasMore: false, nextCursor: null });
 	// Only the anonymous unsearched shared feed is the same for everyone; search stays uncached to keep the CDN key space small.
 	const headers = caller === null && !query ? publicListHeaders : privateHeaders;
 	return json({ ...result, semanticAvailable: false }, { headers });

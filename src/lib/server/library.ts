@@ -194,6 +194,13 @@ export async function listItems(env: Env, user: User | null, { scope, collection
 	return { items, hasMore, nextCursor: hasMore && last ? encodeCursor({ createdAt: last.created_at, id: last.id }) : null };
 }
 
+/** A Discord backup job for a new item, due at once (#52). */
+export function enqueueBackupStatement(db: D1Database, itemId: string) {
+	const at = now();
+	return db.prepare('INSERT INTO backup_jobs (id, item_id, next_at, created_at) VALUES (?, ?, ?, ?)')
+		.bind(crypto.randomUUID(), itemId, at, at);
+}
+
 export function enqueueImageStatement(db: D1Database, itemId: string, ownerId: string) {
 	return db.prepare("INSERT INTO ai_jobs (id, kind, item_id, owner_id, created_at) VALUES (?, 'image', ?, ?, ?)")
 		.bind(crypto.randomUUID(), itemId, ownerId, now());
@@ -322,6 +329,7 @@ async function storeItem(
 				image.width, image.height, Number(shared), initial.description, JSON.stringify(initial.tags), initial.extractedText,
 				source ? JSON.stringify(source) : null, now()),
 			enqueueImageStatement(db, id, ownerId),
+			...(env.DISCORD_BACKUP_WEBHOOK_URL ? [enqueueBackupStatement(db, id)] : []),
 			...indexItem(db, id)
 		]);
 		return { item: mapRow(inserted.results[0]), duplicate: false };

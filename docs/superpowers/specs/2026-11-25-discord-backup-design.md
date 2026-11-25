@@ -27,7 +27,7 @@ Validated with a logic prototype (state model below).
 - **Config**: `DISCORD_BACKUP_WEBHOOK_URL` Worker secret (optional, in `Env`). Unset = feature off, no jobs queued. `DISCORD_BACKUP_MAX_BYTES` var, default 10 MiB (raise for boosted servers).
 - **Events**: every new item from `storeItem`: upload, Openverse save, shared copy. Duplicates (early return in `storeItem`) queue nothing.
 - **Enqueue**: the job insert goes in `storeItem`'s existing `db.batch` with the item insert, only when the webhook is set. If the batch fails, no job; the upload path is otherwise unchanged.
-- **Table** (`migrations/0003_backup_jobs.sql`): `backup_jobs(id PK, item_id REFERENCES items(id) ON DELETE CASCADE, state CHECK IN ('pending','leased','complete','skipped','failed') DEFAULT 'pending', attempts INT DEFAULT 0, next_at INT, lease_token, lease_until INT, message_id TEXT, error TEXT, created_at INT)`, index on `(state, next_at)`. Times in ms (`now()`).
+- **Table** (`migrations/0004_backup_jobs.sql`): `backup_jobs(id PK, item_id REFERENCES items(id) ON DELETE CASCADE, state CHECK IN ('pending','leased','complete','skipped','failed') DEFAULT 'pending', attempts INT DEFAULT 0, next_at INT, lease_token, lease_until INT, message_id TEXT, error TEXT, created_at INT)`, index on `(state, next_at)`. Times in ms (`now()`).
 - **Runner** (`runScheduled` → `drainBackupJobs(env)`; skip entirely when the webhook is unset): claim up to 5 jobs that are `pending` and due, or `leased` with an expired lease, oldest first; lease 5 min with a random token. Send one at a time:
   - original size > max → post a text-only notice, state `skipped`.
   - item's original missing in R2 → `skipped`, error noted.
@@ -41,7 +41,7 @@ Validated with a logic prototype (state model below).
 - **Crash**: an expired lease is reclaimed; a duplicate Discord post is acceptable.
 - **Privacy**: README states private images are sent to Discord when enabled, the URL is a secret (`wrangler secret put`), and how to requeue failed jobs with SQL.
 - **Existing items**: no automatic backfill. README gives one copy-paste SQL that queues a job for every item without one, run once after enabling (~300 items/hour).
-- **Migration order**: the job insert shares the item batch, so migration 0003 must be applied before setting the secret; README deploy steps already run `d1 migrations apply` first, and the setup section says so. *(builder's call)*
+- **Migration order**: the job insert shares the item batch, so migration 0004 must be applied before setting the secret; README deploy steps already run `d1 migrations apply` first, and the setup section says so. *(builder's call)*
 - **Errors**: Discord error bodies are stored truncated; the webhook URL is never logged or stored.
 
 ## Future (not built)

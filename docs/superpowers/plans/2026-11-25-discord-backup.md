@@ -30,7 +30,7 @@
 ### Task 1: Queue table and enqueue in storeItem
 
 **Files:**
-- Create: `migrations/0003_backup_jobs.sql`
+- Create: `migrations/0004_backup_jobs.sql`
 - Modify: `src/lib/server/env.ts` (add `DISCORD_BACKUP_WEBHOOK_URL?: string; DISCORD_BACKUP_MAX_BYTES?: string;` with doc comments)
 - Modify: `src/lib/server/library.ts` (`storeItem` batch, ~line 283)
 - Test: `tests/library.test.ts`

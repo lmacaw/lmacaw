@@ -1,6 +1,6 @@
 import { env } from 'cloudflare:test';
 import { beforeEach, expect, test, vi } from 'vitest';
-import { cleanupDeletedMedia, createItem, deleteItem } from '$lib/server/library';
+import { cleanupDeletedMedia, createItem, deleteItem, saveSharedCopy } from '$lib/server/library';
 import { createTestItem, imageInput, png, unsignedEnv, user, webp, mediaKeys } from './fixtures';
 
 let keysBefore: string[] = [];
@@ -132,4 +132,29 @@ test('queues media whose deletion failed and removes it on retry', async () => {
 	await cleanupDeletedMedia(unsignedEnv);
 	expect(await env.MEDIA.head(item.storageKey)).toBeNull();
 	expect(await env.DB.prepare('SELECT storage_key FROM media_deletions').all()).toMatchObject({ results: [] });
+});
+
+const backupEnv = { ...unsignedEnv, DISCORD_BACKUP_WEBHOOK_URL: 'https://discord.test/hook' };
+const backupJobs = (itemId: string) =>
+	env.DB.prepare('SELECT state, attempts FROM backup_jobs WHERE item_id = ?').bind(itemId).all().then((result) => result.results);
+
+test('queues one Discord backup job per new item when the webhook is set (#52)', async () => {
+	const owner = await user();
+	const input = imageInput();
+	const { item } = await createItem(backupEnv, owner.id, input);
+	expect(await backupJobs(item.id)).toEqual([{ state: 'pending', attempts: 0 }]);
+	expect(await createItem(backupEnv, owner.id, input)).toMatchObject({ duplicate: true });
+	expect(await backupJobs(item.id)).toHaveLength(1);
+});
+
+test('queues no backup job without a webhook (#52)', async () => {
+	const { item } = await createTestItem(await user());
+	expect(await backupJobs(item.id)).toEqual([]);
+});
+
+test('queues a backup job for a saved shared copy (#52)', async () => {
+	const { item } = await createItem(unsignedEnv, (await user()).id, imageInput({ shared: true }));
+	const copy = await saveSharedCopy(backupEnv, (await user()).id, item.id);
+	expect(copy.duplicate).toBe(false);
+	expect(await backupJobs(copy.item.id)).toEqual([{ state: 'pending', attempts: 0 }]);
 });

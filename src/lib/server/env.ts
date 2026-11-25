@@ -25,6 +25,10 @@ export type Env = {
 	ACCESS_TEAM_DOMAIN?: string;
 	/** Public mode: the Access application's audience tag. */
 	ACCESS_AUD?: string;
+	/** Optional secret: post every new original to this Discord webhook as an off-site backup. Unset = off. */
+	DISCORD_BACKUP_WEBHOOK_URL?: string;
+	/** Largest original to attach, in bytes (default 10 MiB, Discord's unboosted limit). Larger ones get a text notice. */
+	DISCORD_BACKUP_MAX_BYTES?: string;
 };
 
 export type AuthMode = 'public' | 'password';

@@ -3,6 +3,7 @@ import type { Item, SourceMetadata as ClientSourceMetadata } from '$lib/types';
 import type { User } from './auth';
 import { many, now, one, run } from './db';
 import { authMode, type Env } from './env';
+import { mediaSigner } from './media-url';
 import { isThumbnailType, sniffImageType } from './media-validation';
 import { ftsQuery, indexItem } from './search';
 import { copyObject, deleteObject, newKey, putObject } from './storage';
@@ -60,12 +61,14 @@ type ItemPatch = Partial<Omit<InitialFields, 'extractedText'> & {
 	shared: boolean;
 	favorite: boolean;
 }>;
-type ListOptions = { scope?: string | null; collection?: string | null; query?: string; page?: number };
+type ListOptions = { scope?: string | null; collection?: string | null; query?: string; page?: number; cursor?: Cursor | null };
+/** The (created_at, id) of the last item shown: the next page starts after it. */
+export type Cursor = { createdAt: number; id: string };
 
 export class InvalidItemError extends Error {}
 
 export const validItemId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-const pageSize = 200;
+const pageSize = 60;
 const originalLimit = 20 * 1024 * 1024;
 const thumbnailLimit = 300 * 1024;
 
@@ -90,6 +93,8 @@ function mapDto(owner: string | null | undefined, row: ItemWithAnalysis): ItemDt
 	return {
 		id: row.id,
 		content_type: row.content_type,
+		width: row.width,
+		height: row.height,
 		shared: Boolean(row.shared),
 		favorite: owner !== undefined && (owner === null || row.owner_id === owner) && Boolean(row.favorite),
 		description: row.description,
@@ -124,8 +129,18 @@ export async function getVisibleItem(db: D1Database, owner: string | null | unde
 	return row && mapRow(row);
 }
 
-export async function listItems(env: Env, user: User | null, { scope, collection, query = '', page = 1 }: ListOptions):
-	Promise<{ items: ItemDto[]; hasMore: boolean }> {
+// The legacy ?page parameter uses OFFSET, so a deep page reads every row before it: cap anonymous callers at ~5,000 items.
+// Cursor paging reads one page of index rows at any depth and has no cap.
+export const anonPageLimit = Math.ceil(5000 / pageSize);
+
+export const encodeCursor = ({ createdAt, id }: Cursor) => `${createdAt}_${id}`;
+export function decodeCursor(value: string): Cursor | null {
+	const match = /^(\d{1,16})_([0-9a-z-]{1,64})$/i.exec(value);
+	return match ? { createdAt: Number(match[1]), id: match[2] } : null;
+}
+
+export async function listItems(env: Env, user: User | null, { scope, collection, query = '', page = 1, cursor = null }: ListOptions):
+	Promise<{ items: ItemDto[]; hasMore: boolean; nextCursor: string | null }> {
 	const filters: string[] = [];
 	const params: (string | number)[] = [];
 	const owner = user === null ? undefined : libraryOwner(env, user);
@@ -154,12 +169,29 @@ export async function listItems(env: Env, user: User | null, { scope, collection
 		params.push(queryMatch);
 	}
 
-	const rows = await many<ItemWithAnalysis>(env.DB, `
+	if (cursor) {
+		// A row value seeks the (owner|shared, created_at DESC, id DESC) indexes straight to the cursor.
+		filters.push('(i.created_at, i.id) < (?, ?)');
+		params.push(cursor.createdAt, cursor.id);
+	}
+
+	const rows = await many<ItemWithAnalysis & { created_at: number }>(env.DB, `
 		${itemWithAnalysis} ${searchJoin}
 		WHERE ${filters.join(' AND ') || '1 = 1'} ORDER BY i.created_at DESC, i.id DESC LIMIT ? OFFSET ?
-	`, ...params, pageSize + 1, (page - 1) * pageSize);
-	const items = rows.slice(0, pageSize).map((row) => mapDto(owner, row));
-	return { items, hasMore: rows.length > pageSize };
+	`, ...params, pageSize + 1, cursor ? 0 : (page - 1) * pageSize);
+	const pageRows = rows.slice(0, pageSize);
+	const hasMore = rows.length > pageSize;
+	const last = pageRows.at(-1);
+	// The query above proved each item visible to this caller, so tiles load straight from R2 without a Worker hop per thumbnail.
+	const sign = mediaSigner(env);
+	const items = await Promise.all(pageRows.map(async (row) => ({
+		...mapDto(owner, row),
+		thumbnail_url: sign
+			// No thumbnail (an old copy): the media route serves the original, so sign that with its stored type.
+			? await (row.thumbnail_key ? sign(row.thumbnail_key) : sign(row.storage_key, row.content_type))
+			: `/api/v1/items/${row.id}/media?size=thumbnail`
+	})));
+	return { items, hasMore, nextCursor: hasMore && last ? encodeCursor({ createdAt: last.created_at, id: last.id }) : null };
 }
 
 export function enqueueImageStatement(db: D1Database, itemId: string, ownerId: string) {
@@ -267,8 +299,12 @@ async function storeItem(
 	const id = crypto.randomUUID();
 	const key = newKey();
 	const thumbnailKey = hasThumbnail ? newKey() : null;
-	const discard = () => Promise.allSettled([key, thumbnailKey].map((objectKey) =>
-		objectKey === null ? Promise.resolve() : deleteObject(bucket, objectKey)));
+	// Queue first, so cron retries a delete that fails. The queue write may fail too; try the delete anyway.
+	const discard = async () => {
+		const keys = [key, thumbnailKey].filter((objectKey) => objectKey !== null);
+		await queueMediaDeletions(db, keys).catch(() => {});
+		await Promise.all(keys.map((objectKey) => cleanMediaKey(db, bucket, objectKey)));
+	};
 	try {
 		await write(key, thumbnailKey);
 	} catch (error) {
@@ -327,8 +363,13 @@ export async function createItem(env: Env, ownerId: string, input: NewItem): Pro
 
 	return storeItem(env, ownerId, { content_hash: sha256, content_type: contentType, width, height },
 		source, initial, shared, true, async (key, thumbnailKey) => {
-			await putObject(env.MEDIA, key, original.stream(), contentType, original.size);
-			await putObject(env.MEDIA, thumbnailKey!, thumbnail.stream(), thumbnailType, thumbnail.size);
+			// allSettled, not all: discard() must run only after both writes stop, or a late put leaks.
+			const writes = await Promise.allSettled([
+				putObject(env.MEDIA, key, original.stream(), contentType, original.size),
+				putObject(env.MEDIA, thumbnailKey!, thumbnail.stream(), thumbnailType, thumbnail.size)
+			]);
+			const failed = writes.find((result) => result.status === 'rejected');
+			if (failed) throw failed.reason;
 		});
 }
 
@@ -392,9 +433,19 @@ async function cleanMediaKey(db: D1Database, bucket: R2Bucket, key: string): Pro
 	}
 }
 
+function queueMediaDeletions(db: D1Database, keys: string[]) {
+	return db.batch(keys.map((key) => db.prepare(
+		'INSERT INTO media_deletions (storage_key, created_at) VALUES (?, ?) ON CONFLICT(storage_key) DO NOTHING'
+	).bind(key, now())));
+}
+
+/** Skips queued keys that an item still references, so a stray queue row never deletes live media. */
 export async function cleanupDeletedMedia(env: Env, limit = 50): Promise<void> {
-	const keys = await many<{ storage_key: string }>(env.DB,
-		'SELECT storage_key FROM media_deletions ORDER BY created_at LIMIT ?', limit);
+	const keys = await many<{ storage_key: string }>(env.DB, `
+		SELECT storage_key FROM media_deletions d
+		WHERE NOT EXISTS (SELECT 1 FROM items WHERE storage_key = d.storage_key OR thumbnail_key = d.storage_key)
+		ORDER BY created_at LIMIT ?
+	`, limit);
 	for (const { storage_key } of keys) await cleanMediaKey(env.DB, env.MEDIA, storage_key);
 }
 

@@ -29,7 +29,7 @@ test('streams original and thumbnail bytes with sniffed types and download filen
 	expect(original.status).toBe(200);
 	expect(original.headers.get('content-type')).toBe('image/png');
 	expect(original.headers.get('content-disposition')).toBe(`attachment; filename="lmacaw-${item.id.slice(0, 8)}.png"`);
-	expect(original.headers.get('cache-control')).toBe('private, max-age=300');
+	expect(original.headers.get('cache-control')).toBe('private, max-age=31536000, immutable');
 	expect(await original.bytes()).toEqual(png);
 
 	const thumbnail = await media(owner, item.id, '?size=thumbnail');
@@ -44,7 +44,7 @@ test('redirects to signed URLs: thumbnails keep their stored type, downloads nam
 	const { item } = await createTestItem(owner);
 	const thumbnail = await media(owner, item.id, '?size=thumbnail', signedBindings);
 	expect(thumbnail.status).toBe(302);
-	expect(thumbnail.headers.get('cache-control')).toBe('private, max-age=300');
+	expect(thumbnail.headers.get('cache-control')).toBe('private, max-age=3600');
 	const thumbnailTarget = new URL(thumbnail.headers.get('location')!);
 	expect(thumbnailTarget.host).toBe('account.r2.cloudflarestorage.com');
 	expect(thumbnailTarget.pathname).toBe(`/media/${item.thumbnailKey}`);

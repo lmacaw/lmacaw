@@ -267,8 +267,12 @@ async function storeItem(
 	const id = crypto.randomUUID();
 	const key = newKey();
 	const thumbnailKey = hasThumbnail ? newKey() : null;
-	const discard = () => Promise.allSettled([key, thumbnailKey].map((objectKey) =>
-		objectKey === null ? Promise.resolve() : deleteObject(bucket, objectKey)));
+	// Queue first, so cron retries a delete that fails. The queue write may fail too; try the delete anyway.
+	const discard = async () => {
+		const keys = [key, thumbnailKey].filter((objectKey) => objectKey !== null);
+		await queueMediaDeletions(db, keys).catch(() => {});
+		await Promise.all(keys.map((objectKey) => cleanMediaKey(db, bucket, objectKey)));
+	};
 	try {
 		await write(key, thumbnailKey);
 	} catch (error) {
@@ -392,9 +396,19 @@ async function cleanMediaKey(db: D1Database, bucket: R2Bucket, key: string): Pro
 	}
 }
 
+function queueMediaDeletions(db: D1Database, keys: string[]) {
+	return db.batch(keys.map((key) => db.prepare(
+		'INSERT INTO media_deletions (storage_key, created_at) VALUES (?, ?) ON CONFLICT(storage_key) DO NOTHING'
+	).bind(key, now())));
+}
+
+/** Skips queued keys that an item still references, so a stray queue row never deletes live media. */
 export async function cleanupDeletedMedia(env: Env, limit = 50): Promise<void> {
-	const keys = await many<{ storage_key: string }>(env.DB,
-		'SELECT storage_key FROM media_deletions ORDER BY created_at LIMIT ?', limit);
+	const keys = await many<{ storage_key: string }>(env.DB, `
+		SELECT storage_key FROM media_deletions d
+		WHERE NOT EXISTS (SELECT 1 FROM items WHERE storage_key = d.storage_key OR thumbnail_key = d.storage_key)
+		ORDER BY created_at LIMIT ?
+	`, limit);
 	for (const { storage_key } of keys) await cleanMediaKey(env.DB, env.MEDIA, storage_key);
 }
 

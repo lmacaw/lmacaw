@@ -7,6 +7,7 @@
 	import DetailDialog from '$lib/components/DetailDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
+	import { lightDismiss } from '$lib/dialog';
 	import type { Collection, Discovery, Item, Scope } from '$lib/types';
 	import { eachLimit, fetchAndUpload, uploadFile } from '$lib/upload';
 	import { sha256Of } from '$lib/thumbnail';
@@ -519,7 +520,7 @@
 		onsave={saveShared} onretry={retryAi} ontogglecollection={toggleCollection}
 	/>
 
-	{#if !publicLibrary}<dialog bind:this={formDialog} class="form-dialog" aria-labelledby="form-title" onclose={clearStaged}
+	{#if !publicLibrary}<dialog bind:this={formDialog} use:lightDismiss class="form-dialog" aria-labelledby="form-title" onclose={clearStaged}
 		ondragover={(event) => { if (form.kind === 'add') { event.preventDefault(); dropActive = true; } }}
 		ondragleave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropActive = false; }}
 		ondrop={(event) => { if (form.kind === 'add') dropInAdd(event); }}>

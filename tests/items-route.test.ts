@@ -24,7 +24,7 @@ test('accepts multipart uploads, returns a public DTO and reuses a duplicate', a
 	expect(response.status).toBe(201);
 	const payload = await response.json();
 	expect(payload).toEqual({ duplicate: false, item: {
-		id: expect.any(String), content_type: 'image/png', shared: false, favorite: false, description: '',
+		id: expect.any(String), content_type: 'image/png', width: input.width, height: input.height, shared: false, favorite: false, description: '',
 		tags: [], source_metadata: null, ai_description: null, extracted_text: null, suggested_tags: null, ai_state: 'pending'
 	} });
 	const duplicate = await POST(await uploadEvent(owner, uploadForm(input)));

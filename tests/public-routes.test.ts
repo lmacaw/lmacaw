@@ -98,3 +98,21 @@ test('lets every admin see and manage items another admin uploaded (#29)', async
 	expect((await remove(itemEvent({ method: 'DELETE' }))).status).toBe(204);
 	expect(await getItemDto(unsignedEnv, first.id, item.id)).toBeNull();
 });
+
+test('caps anonymous page depth but not signed-in paging', async () => {
+	const deep = await list(listEvent(null, '?scope=shared&page=26', publicBindings));
+	expect(deep.status).toBe(400);
+	expect(await deep.json()).toEqual({ error: 'Page too deep' });
+	expect((await list(listEvent(null, '?scope=shared&page=25', publicBindings))).status).toBe(200);
+	expect((await list(listEvent(await user(true), '?scope=shared&page=26', publicBindings))).status).toBe(200);
+});
+
+test('lets anonymous unsearched shared listings be cached briefly, nothing else', async () => {
+	const anon = await list(listEvent(null, '?scope=shared', publicBindings));
+	expect(anon.headers.get('cache-control')).toBe('public, max-age=60');
+	expect(anon.headers.get('vary')).toBe('Cookie');
+	const search = await list(listEvent(null, '?scope=shared&q=cat', publicBindings));
+	expect(search.headers.get('cache-control')).toBe('private, no-store');
+	const admin = await list(listEvent(await user(true), '?scope=shared', publicBindings));
+	expect(admin.headers.get('cache-control')).toBe('private, no-store');
+});

@@ -9,6 +9,10 @@ import type { RequestHandler } from './$types';
 
 const bodyLimit = 21 * 1024 * 1024 + 300 * 1024;
 const privateHeaders = { 'cache-control': 'private, no-store' };
+// Anonymous listings use OFFSET paging, so a deep page reads every row before it. 25 pages x 200 = 5,000 items.
+const anonPageLimit = 25;
+// Vary on Cookie so a browser never serves a signed-in caller the anonymous copy.
+const publicListHeaders = { 'cache-control': 'public, max-age=60', vary: 'Cookie' };
 
 export const GET: RequestHandler = async (event) => {
 	const { url, platform } = event;
@@ -21,16 +25,15 @@ export const GET: RequestHandler = async (event) => {
 	if (!Number.isInteger(page) || page < 1 || page > 10_000) {
 		return json({ error: 'Invalid page' }, { status: 400 });
 	}
+	if (caller === null && page > anonPageLimit) return json({ error: 'Page too deep' }, { status: 400 });
 	const collection = url.searchParams.get('collection');
 	if (collection !== null && !validItemId(collection)) return json({ error: 'Invalid collection' }, { status: 400 });
 
-	const result = await listItems(env, caller, {
-		scope,
-		collection: collection?.toLowerCase(),
-		query: (url.searchParams.get('q') ?? '').trim().slice(0, 200),
-		page
-	});
-	return json({ ...result, semanticAvailable: false }, { headers: privateHeaders });
+	const query = (url.searchParams.get('q') ?? '').trim().slice(0, 200);
+	const result = await listItems(env, caller, { scope, collection: collection?.toLowerCase(), query, page });
+	// Only the anonymous unsearched shared feed is the same for everyone; search stays uncached to keep the CDN key space small.
+	const headers = caller === null && !query ? publicListHeaders : privateHeaders;
+	return json({ ...result, semanticAvailable: false }, { headers });
 };
 
 export const POST: RequestHandler = async (event) => {

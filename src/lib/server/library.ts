@@ -65,7 +65,7 @@ type ListOptions = { scope?: string | null; collection?: string | null; query?: 
 export class InvalidItemError extends Error {}
 
 export const validItemId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-const pageSize = 200;
+const pageSize = 60;
 const originalLimit = 20 * 1024 * 1024;
 const thumbnailLimit = 300 * 1024;
 

@@ -7,10 +7,13 @@
 	import DetailDialog from '$lib/components/DetailDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
+	import { lightDismiss } from '$lib/dialog';
 	import type { Collection, Discovery, Item, Scope } from '$lib/types';
-	import { fetchAndUpload, uploadFile } from '$lib/upload';
+	import { eachLimit, fetchAndUpload, uploadFile } from '$lib/upload';
 	import { sha256Of } from '$lib/thumbnail';
 	import { viewFromUrl, viewHref } from '$lib/view';
+	import { appendPage } from '$lib/paging';
+	import type { Attachment } from 'svelte/attachments';
 
 	let { data } = $props();
 	const user = $derived(data.user);
@@ -25,12 +28,13 @@
 	let canCopy = $state(true), menuButton: HTMLButtonElement = $state(undefined!);
 	let pasteKey = $state('Ctrl+V'), dropActive = $state(false);
 	let staged: { id: string; file: File; hash: string; preview: string; failed: boolean }[] = $state([]), stageNote = $state('');
+	let uploading = $state(0), retryEntries: typeof staged = $state([]);
 	const view = $derived(viewFromUrl(page.url));
 	const selectedScope = $derived(view.scope), selectedCollection = $derived(view.collection);
 	let query = $state('');
 	const scope = $derived<Scope>(publicLibrary ? 'shared' : selectedScope);
 	let theme = $state<'system' | 'light' | 'dark'>('system'), menuOpen = $state(false), dragging = $state(false);
-	let items: Item[] = $state([]), loaded = $state(false), loadFailed = $state(false), hasMore = $state(false), currentPage = 1, semanticAvailable = $state(false);
+	let items: Item[] = $state([]), loaded = $state(false), loadFailed = $state(false), hasMore = $state(false), loadingMore = $state(false), moreFailed = $state(false), currentPage = 1, semanticAvailable = $state(false);
 	let discoveries: Discovery[] = $state([]), discovering = $state(false);
 	let collections: Collection[] = $state([]), itemCollections: Collection[] = $state([]);
 	let current: Item | null = $state(null);
@@ -43,35 +47,48 @@
 	const title = $derived({ library: 'Library', favorites: 'Favorites', shared: 'Shared', discover: 'Discover', collection: collectionName }[scope]);
 
 	// A message that offers a download stays longer, so there is time to reach its link.
-	function notify(text: string, download: Item | null = null) {
+	function notify(text: string, download: Item | null = null, duration = download ? 10000 : 4000) {
 		message = text; messageDownload = download;
 		if (messageTimer) clearTimeout(messageTimer);
-		messageTimer = setTimeout(() => { message = ''; messageDownload = null; }, download ? 10000 : 4000);
+		messageTimer = setTimeout(() => { message = ''; messageDownload = null; }, duration);
 	}
 	async function api(path: string, method = 'GET', body?: unknown) {
 		return fetch(path, body === undefined ? { method } : { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 	}
 
-	async function refresh(page = 1) {
+	// Loads pages first..last; a reload after a change refetches every loaded page so the scroll position survives.
+	async function refresh(first = 1, last = first) {
 		if (scope === 'discover') return;
 		const requestId = ++requestNumber;
-		const params = new URLSearchParams({ scope: scope === 'collection' ? 'library' : scope, q: query, page: String(page) });
-		if (scope === 'collection') params.set('collection', selectedCollection);
+		loadingMore = first > 1; moreFailed = false;
+		const pageUrl = (page: number) => {
+			const params = new URLSearchParams({ scope: scope === 'collection' ? 'library' : scope, q: query, page: String(page) });
+			if (scope === 'collection') params.set('collection', selectedCollection);
+			return `/api/v1/items?${params}`;
+		};
 		try {
-			const response = await fetch(`/api/v1/items?${params}`);
+			const responses = await Promise.all(Array.from({ length: last - first + 1 }, (_, index) => fetch(pageUrl(first + index))));
 			if (requestId !== requestNumber) return;
-			if (!response.ok) { failLoad(page); return; }
-			const result = await response.json();
+			if (responses.some((response) => !response.ok)) { failLoad(first); return; }
+			const results = await Promise.all(responses.map((response) => response.json()));
 			if (requestId !== requestNumber) return;
-			const seen = new Set(items.map((item) => item.id));
-			items = page === 1 ? result.items : [...items, ...result.items.filter((item: Item) => !seen.has(item.id))];
-			if (page === 1) semanticAvailable = result.semanticAvailable;
-			hasMore = result.hasMore; currentPage = page; loaded = true; loadFailed = false;
-		} catch { if (requestId === requestNumber) failLoad(page); }
+			items = results.reduce((all: Item[], result) => appendPage(all, result.items), first === 1 ? [] : items);
+			if (first === 1) semanticAvailable = results[0].semanticAvailable;
+			hasMore = results[results.length - 1].hasMore; currentPage = last; loaded = true; loadFailed = false;
+		} catch { if (requestId === requestNumber) failLoad(first); }
+		finally { if (requestId === requestNumber) loadingMore = false; }
 	}
+	const reload = () => refresh(1, currentPage);
+	// The next page loads about a screen before the end; the sentinel is re-created after each page, so tall screens keep filling.
+	const nearEnd: Attachment = (node) => {
+		const observer = new IntersectionObserver(([entry]) => { if (entry.isIntersecting) void refresh(currentPage + 1); }, { rootMargin: '100% 0px' });
+		observer.observe(node);
+		return () => observer.disconnect();
+	};
 	// A failed first page has nothing to show, so it gets an inline retry instead of a toast.
 	function failLoad(page: number) {
 		if (page === 1 && !loaded) loadFailed = true;
+		else if (page > 1) { moreFailed = true; notify('Could not load more memes.'); }
 		else notify('Could not load memes.');
 	}
 	function queueSearch() {
@@ -194,25 +211,39 @@
 		if (failed.length) form.error = `${failed.length === 1 ? '1 link' : `${failed.length} links`} could not be loaded. Use public links to PNG, JPEG, WebP, or GIF files.`;
 	}
 
+	// Uploads run in the background, 3 at a time, so the dialog closes at once and a toast tracks them.
+	// Failed images are kept for the toast's Retry, which reopens the Add dialog with them.
 	async function uploadStaged() {
-		const collection = addTarget(), queue = [...staged];
-		let added = 0, duplicates = 0, failed = 0;
-		form.error = '';
-		for (const [index, entry] of queue.entries()) {
-			form.progress = `Uploading ${index + 1} of ${queue.length}…`;
-			let ok = false;
+		const collection = addTarget(), queue = staged;
+		staged = []; formDialog.close();
+		for (const entry of retryEntries) URL.revokeObjectURL(entry.preview);
+		retryEntries = [];
+		uploading++;
+		let done = 0, added = 0, duplicates = 0;
+		const failed: typeof queue = [];
+		const progress = () => { message = `Uploading ${done} of ${queue.length}…`; messageDownload = null; clearTimeout(messageTimer); };
+		progress();
+		await eachLimit(queue, 3, async (entry) => {
 			try {
-				const response = await uploadFile(entry.file, { collection });
-				if (response.ok) { ok = true; if ((await response.json()).duplicate) duplicates++; else added++; }
-			} catch { /* counted below */ }
-			if (ok) unstage(entry.id);
-			else { failed++; staged = staged.map((candidate) => (candidate.id === entry.id ? { ...candidate, failed: true } : candidate)); }
-		}
-		form.progress = '';
+				const response = await uploadFile(entry.file, { collection, sha256: entry.hash });
+				if (!response.ok) throw new Error();
+				if ((await response.json()).duplicate) duplicates++; else added++;
+				URL.revokeObjectURL(entry.preview);
+			} catch { failed.push({ ...entry, failed: true }); }
+			done++; progress();
+		});
+		uploading--;
 		if (added || duplicates) await showAdded();
 		const summary = [added && (added === 1 ? 'Added.' : `Added ${added}.`), duplicates && `${duplicates} already in your library.`].filter(Boolean).join(' ');
-		if (failed) { form.error = `${summary} Could not add ${failed === 1 ? '1 image' : `${failed} images`}.`.trim(); return; }
-		formDialog.close(); notify(summary);
+		if (!failed.length) { notify(summary); return; }
+		retryEntries = failed;
+		notify(`${summary} Could not add ${failed.length === 1 ? '1 image' : `${failed.length} images`}.`.trim(), null, 10000);
+	}
+	function retryFailed() {
+		if (formDialog.open) return;
+		const entries = retryEntries;
+		retryEntries = []; message = '';
+		openForm('add'); staged = entries;
 	}
 
 	// Files are staged; an image dragged from another page usually brings only its URL, which is loaded.
@@ -241,7 +272,7 @@
 		items = items.map((candidate) => (candidate.id === item.id ? local : candidate));
 		if (current?.id === item.id) current = local;
 		if ('description' in patch) notify('Saved.');
-		await refresh();
+		await reload();
 		// Keep the open item even if it no longer matches the current view (e.g. unfavorited in Favorites).
 		if (current?.id === item.id) current = items.find((candidate) => candidate.id === item.id) ?? local;
 	}
@@ -252,13 +283,13 @@
 			: await fetch(`/api/v1/collections/${collection.id}/items?${new URLSearchParams({ itemId: current.id })}`, { method: 'DELETE' });
 		if (!response.ok) { notify('Could not update collection.'); return; }
 		itemCollections = itemCollections.map((entry) => (entry.id === collection.id ? { ...entry, hasItem: checked } : entry));
-		if (scope === 'collection') await refresh();
+		if (scope === 'collection') await reload();
 	}
 	async function removeItem(item: Item) {
 		if (!confirm('Delete this meme? This cannot be undone.')) return;
 		const response = await fetch(`/api/v1/items/${item.id}`, { method: 'DELETE' });
 		if (!response.ok) { notify('Could not delete meme.'); return; }
-		current = null; await refresh();
+		current = null; await reload();
 	}
 	// Clipboards accept PNG, not GIF, so animated GIFs copy their first frame only.
 	async function pngOf(item: Item): Promise<Blob> {
@@ -294,7 +325,7 @@
 		const response = await fetch(`/api/v1/items/${item.id}/retry-ai`, { method: 'POST' });
 		if (!response.ok) { notify('Could not retry AI.'); return; }
 		notify('AI analysis queued.');
-		await refresh();
+		await reload();
 		if (current?.id === item.id) current = items.find((candidate) => candidate.id === item.id) ?? { ...item, ai_state: 'pending' };
 	}
 
@@ -379,6 +410,9 @@
 	});
 </script>
 
+<!-- Leaving mid-upload drops the rest of the queue, so the browser asks first. -->
+<svelte:window onbeforeunload={(event) => { if (uploading) event.preventDefault(); }} />
+
 <svelte:head><title>{user && !publicLibrary ? `${title} · Lmacaw` : 'Lmacaw'}</title></svelte:head>
 
 {#if !showLibrary}
@@ -450,7 +484,7 @@
 					<ul class="gallery" aria-label="Openverse results">
 						{#each discoveries as item (item.id)}
 							<li class="tile discover-tile">
-								<img src={`https://api.openverse.org/v1/images/${item.id}/thumb/`} alt={item.title || 'Openverse image'} loading="lazy" referrerpolicy="no-referrer" />
+								<img src={`https://api.openverse.org/v1/images/${item.id}/thumb/`} alt={item.title || 'Openverse image'} loading="lazy" decoding="async" referrerpolicy="no-referrer" onload={(event) => event.currentTarget.classList.add('ready')} />
 								<div class="discover-overlay">
 									<span class="discover-credit">{item.attribution || item.title}</span>
 									<button class="tile-action labeled" aria-label={`${item.saved ? 'Saved' : 'Save'} ${item.title || 'image'}`} disabled={item.saved || savingDiscovery.includes(item.id)} onclick={() => saveDiscovery(item)}><Icon name="bookmark" size={14} />{item.saved ? 'Saved' : savingDiscovery.includes(item.id) ? 'Saving…' : 'Save'}</button>
@@ -462,8 +496,9 @@
 					<div class="empty"><p>{discovering ? 'Searching…' : 'Search openly licensed images on Openverse.'}</p><p class="hint">Results may include few memes. Check each license at its source.</p></div>
 				{/if}
 			{:else if items.length}
-				<Gallery {items} {canCopy} {publicLibrary} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} />
-				{#if hasMore}<div class="more"><button class="button ghost" onclick={() => refresh(currentPage + 1)}>Load more</button></div>{/if}
+				<Gallery {items} loading={loadingMore} {canCopy} {publicLibrary} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} />
+				{#if hasMore && moreFailed}<div class="more"><button class="button ghost" onclick={() => refresh(currentPage + 1)}>Load more</button></div>
+				{:else if hasMore && !loadingMore}<div class="sentinel" aria-hidden="true" {@attach nearEnd}></div>{/if}
 			{:else if loadFailed}
 				<div class="empty"><p>Could not load memes.</p><button class="button ghost" onclick={() => { loadFailed = false; void refresh(); }}>Retry</button></div>
 			{:else if loaded}
@@ -476,7 +511,7 @@
 			{/if}
 		</main>
 		{#if dragging}<div class="drop-overlay" aria-hidden="true">Drop to add</div>{/if}
-		{#if message && !current}<p class="toast" role="status">{message}{#if messageDownload} <a href={`/api/v1/items/${messageDownload.id}/media?download=1`} download>Download</a>{/if}</p>{/if}
+		{#if message && !current}<p class="toast" role="status">{message}{#if messageDownload} <a href={`/api/v1/items/${messageDownload.id}/media?download=1`} download>Download</a>{/if}{#if retryEntries.length && !uploading} <button type="button" onclick={retryFailed}>Retry</button>{/if}</p>{/if}
 	</div>
 
 	<DetailDialog
@@ -485,7 +520,7 @@
 		onsave={saveShared} onretry={retryAi} ontogglecollection={toggleCollection}
 	/>
 
-	{#if !publicLibrary}<dialog bind:this={formDialog} class="form-dialog" aria-labelledby="form-title" onclose={clearStaged}
+	{#if !publicLibrary}<dialog bind:this={formDialog} use:lightDismiss class="form-dialog" aria-labelledby="form-title" onclose={clearStaged}
 		ondragover={(event) => { if (form.kind === 'add') { event.preventDefault(); dropActive = true; } }}
 		ondragleave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropActive = false; }}
 		ondrop={(event) => { if (form.kind === 'add') dropInAdd(event); }}>

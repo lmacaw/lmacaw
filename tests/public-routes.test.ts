@@ -1,7 +1,10 @@
+import { env } from 'cloudflare:test';
 import { expect, test } from 'vitest';
 import type { User } from '$lib/server/auth';
+import { createCollection } from '$lib/server/collections';
 import { anonPageLimit, getItemDto, listItems, updateItem } from '$lib/server/library';
 import type { Item } from '$lib/types';
+import { POST as collect } from '../src/routes/api/v1/collections/[id]/items/+server';
 import { GET as list, POST as upload } from '../src/routes/api/v1/items/+server';
 import { DELETE as remove, PATCH as patch } from '../src/routes/api/v1/items/[id]/+server';
 import { GET as media } from '../src/routes/api/v1/items/[id]/media/+server';
@@ -97,6 +100,21 @@ test('lets every admin see and manage items another admin uploaded (#29)', async
 	expect((await patch(itemEvent({ method: 'PATCH', body: JSON.stringify({ shared: true }) }))).status).toBe(204);
 	expect((await remove(itemEvent({ method: 'DELETE' }))).status).toBe(204);
 	expect(await getItemDto(unsignedEnv, first.id, item.id)).toBeNull();
+});
+
+test('lets an admin collect and list an item another admin uploaded (#29, #31)', async () => {
+	const first = await user(true);
+	const second = await user(true);
+	const { item } = await createTestItem(first);
+	const { id } = await createCollection(env.DB, second.id, 'Takedowns');
+	const collectionItems = '/api/v1/collections/[id]/items';
+	const added = await collect(publicEventFor(collectionItems, `/api/v1/collections/${id}/items`, second, {
+		method: 'POST', body: JSON.stringify({ itemId: item.id })
+	}, id));
+	expect(added.status).toBe(204);
+
+	const listed = await list(publicEventFor(itemsRoute, `${itemsRoute}?scope=collection&collection=${id}`, second));
+	expect((await listed.json()).items.map(({ id }: Item) => id)).toEqual([item.id]);
 });
 
 test('caps anonymous page depth but not signed-in paging', async () => {

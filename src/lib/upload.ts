@@ -1,7 +1,7 @@
 import { prepareUpload } from './thumbnail';
 
-export async function uploadFile(file: Blob, extra?: { openverse?: string; collection?: string }): Promise<Response> {
-	const { thumbnail, sha256, width, height } = await prepareUpload(file);
+export async function uploadFile(file: Blob, extra?: { openverse?: string; collection?: string; sha256?: string }): Promise<Response> {
+	const { thumbnail, sha256, width, height } = await prepareUpload(file, extra?.sha256);
 	const body = new FormData();
 	body.set('file', file);
 	body.set('thumbnail', thumbnail);
@@ -17,4 +17,11 @@ export async function fetchAndUpload(source: { url: string } | { openverse: stri
 	const response = await fetch(`/api/v1/fetch?${new URLSearchParams(source)}`);
 	if (!response.ok) return response;
 	return uploadFile(await response.blob(), 'openverse' in source ? source : undefined);
+}
+
+/** Runs `task` over `items` with at most `limit` in flight. Tasks must not throw. */
+export async function eachLimit<T>(items: T[], limit: number, task: (item: T) => Promise<void>): Promise<void> {
+	let next = 0;
+	const worker = async () => { while (next < items.length) await task(items[next++]); };
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }

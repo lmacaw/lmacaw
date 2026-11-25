@@ -65,7 +65,7 @@ type ListOptions = { scope?: string | null; collection?: string | null; query?: 
 export class InvalidItemError extends Error {}
 
 export const validItemId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-const pageSize = 200;
+const pageSize = 60;
 const originalLimit = 20 * 1024 * 1024;
 const thumbnailLimit = 300 * 1024;
 
@@ -90,6 +90,8 @@ function mapDto(owner: string | null | undefined, row: ItemWithAnalysis): ItemDt
 	return {
 		id: row.id,
 		content_type: row.content_type,
+		width: row.width,
+		height: row.height,
 		shared: Boolean(row.shared),
 		favorite: owner !== undefined && (owner === null || row.owner_id === owner) && Boolean(row.favorite),
 		description: row.description,
@@ -270,8 +272,12 @@ async function storeItem(
 	const id = crypto.randomUUID();
 	const key = newKey();
 	const thumbnailKey = hasThumbnail ? newKey() : null;
-	const discard = () => Promise.allSettled([key, thumbnailKey].map((objectKey) =>
-		objectKey === null ? Promise.resolve() : deleteObject(bucket, objectKey)));
+	// Queue first, so cron retries a delete that fails. The queue write may fail too; try the delete anyway.
+	const discard = async () => {
+		const keys = [key, thumbnailKey].filter((objectKey) => objectKey !== null);
+		await queueMediaDeletions(db, keys).catch(() => {});
+		await Promise.all(keys.map((objectKey) => cleanMediaKey(db, bucket, objectKey)));
+	};
 	try {
 		await write(key, thumbnailKey);
 	} catch (error) {
@@ -330,8 +336,13 @@ export async function createItem(env: Env, ownerId: string, input: NewItem): Pro
 
 	return storeItem(env, ownerId, { content_hash: sha256, content_type: contentType, width, height },
 		source, initial, shared, true, async (key, thumbnailKey) => {
-			await putObject(env.MEDIA, key, original.stream(), contentType, original.size);
-			await putObject(env.MEDIA, thumbnailKey!, thumbnail.stream(), thumbnailType, thumbnail.size);
+			// allSettled, not all: discard() must run only after both writes stop, or a late put leaks.
+			const writes = await Promise.allSettled([
+				putObject(env.MEDIA, key, original.stream(), contentType, original.size),
+				putObject(env.MEDIA, thumbnailKey!, thumbnail.stream(), thumbnailType, thumbnail.size)
+			]);
+			const failed = writes.find((result) => result.status === 'rejected');
+			if (failed) throw failed.reason;
 		});
 }
 
@@ -395,9 +406,19 @@ async function cleanMediaKey(db: D1Database, bucket: R2Bucket, key: string): Pro
 	}
 }
 
+function queueMediaDeletions(db: D1Database, keys: string[]) {
+	return db.batch(keys.map((key) => db.prepare(
+		'INSERT INTO media_deletions (storage_key, created_at) VALUES (?, ?) ON CONFLICT(storage_key) DO NOTHING'
+	).bind(key, now())));
+}
+
+/** Skips queued keys that an item still references, so a stray queue row never deletes live media. */
 export async function cleanupDeletedMedia(env: Env, limit = 50): Promise<void> {
-	const keys = await many<{ storage_key: string }>(env.DB,
-		'SELECT storage_key FROM media_deletions ORDER BY created_at LIMIT ?', limit);
+	const keys = await many<{ storage_key: string }>(env.DB, `
+		SELECT storage_key FROM media_deletions d
+		WHERE NOT EXISTS (SELECT 1 FROM items WHERE storage_key = d.storage_key OR thumbnail_key = d.storage_key)
+		ORDER BY created_at LIMIT ?
+	`, limit);
 	for (const { storage_key } of keys) await cleanMediaKey(env.DB, env.MEDIA, storage_key);
 }
 

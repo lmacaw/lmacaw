@@ -65,7 +65,7 @@ type ListOptions = { scope?: string | null; collection?: string | null; query?: 
 export class InvalidItemError extends Error {}
 
 export const validItemId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-const pageSize = 200;
+const pageSize = 60;
 const originalLimit = 20 * 1024 * 1024;
 const thumbnailLimit = 300 * 1024;
 
@@ -331,8 +331,13 @@ export async function createItem(env: Env, ownerId: string, input: NewItem): Pro
 
 	return storeItem(env, ownerId, { content_hash: sha256, content_type: contentType, width, height },
 		source, initial, shared, true, async (key, thumbnailKey) => {
-			await putObject(env.MEDIA, key, original.stream(), contentType, original.size);
-			await putObject(env.MEDIA, thumbnailKey!, thumbnail.stream(), thumbnailType, thumbnail.size);
+			// allSettled, not all: discard() must run only after both writes stop, or a late put leaks.
+			const writes = await Promise.allSettled([
+				putObject(env.MEDIA, key, original.stream(), contentType, original.size),
+				putObject(env.MEDIA, thumbnailKey!, thumbnail.stream(), thumbnailType, thumbnail.size)
+			]);
+			const failed = writes.find((result) => result.status === 'rejected');
+			if (failed) throw failed.reason;
 		});
 }
 

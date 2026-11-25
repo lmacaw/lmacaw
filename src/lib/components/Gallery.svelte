@@ -2,10 +2,11 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import type { Attachment } from 'svelte/attachments';
 	import Icon from './Icon.svelte';
+	import { tileSrc } from '$lib/media';
 	import type { Item } from '$lib/types';
 
-	type Props = { items: Item[]; loading?: boolean; canCopy: boolean; shared: boolean; publicLibrary: boolean; onopen: (item: Item) => void; oncopy: (item: Item) => void; onfavorite: (item: Item) => void; onsave: (item: Item) => void };
-	let { items, loading = false, canCopy, shared, publicLibrary, onopen, oncopy, onfavorite, onsave }: Props = $props();
+	type Props = { items: Item[]; loading?: boolean; canCopy: boolean; shared: boolean; publicLibrary: boolean; onopen: (item: Item) => void; oncopy: (item: Item) => void; onfavorite: (item: Item) => void; onsave: (item: Item) => void; onstale: (item: Item) => void };
+	let { items, loading = false, canCopy, shared, publicLibrary, onopen, oncopy, onfavorite, onsave, onstale }: Props = $props();
 
 	// GIF tiles show the still thumbnail and load the animated original only while playing:
 	// on hover/focus with a mouse, or while mostly on screen on touch (a few at once).
@@ -31,14 +32,21 @@
 		return () => { observer?.unobserve(node); stop(node.dataset.id!); };
 	};
 	$effect(() => () => observer?.disconnect());
+
+	// The first row is on screen at once: load it eagerly at high priority. Columns come from the CSS grid (auto-fill).
+	let firstRowSize = $state(2);
+	const columns: Attachment<HTMLElement> = (node) => {
+		firstRowSize = getComputedStyle(node).gridTemplateColumns.split(' ').length;
+	};
 </script>
 
-<ul class="gallery" aria-label="Memes" aria-busy={loading}>
-	{#each items as item (item.id)}
+<ul class="gallery" aria-label="Memes" aria-busy={loading} {@attach columns}>
+	{#each items as item, index (item.id)}
 		{@const label = item.description || item.ai_description || 'Meme'}
 		{@const mediaRoute = `/api/v1/items/${item.id}/media`}
 		{@const gif = item.content_type === 'image/gif'}
-		{@const src = gif && playing.has(item.id) ? mediaRoute : `${mediaRoute}?size=thumbnail`}
+		{@const src = gif && playing.has(item.id) ? mediaRoute : tileSrc(item)}
+		{@const firstRow = index < firstRowSize}
 		<li class="tile" data-id={item.id}
 			onpointerenter={gif && mouse ? () => play(item.id, true) : undefined}
 			onpointerleave={gif && mouse ? () => play(item.id, false) : undefined}
@@ -46,7 +54,8 @@
 			onfocusout={gif ? (event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) play(item.id, false); } : undefined}
 			{@attach gif ? inView : undefined}>
 			<button class="tile-open" data-meme-tile onclick={() => onopen(item)} aria-label={`Open ${label}`}>
-				<img {src} alt="" loading="lazy" decoding="async" onload={(event) => event.currentTarget.classList.add('ready')} />
+				<img {src} alt="" loading={firstRow ? 'eager' : 'lazy'} fetchpriority={firstRow ? 'high' : 'auto'} decoding="async" onload={(event) => event.currentTarget.classList.add('ready')}
+					onerror={() => { if (item.thumbnail_url && src === item.thumbnail_url) onstale(item); }} />
 			</button>
 			<div class="tile-actions">
 				{#if canCopy}

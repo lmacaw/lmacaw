@@ -33,8 +33,10 @@ test('accepts multipart uploads, returns a public DTO and reuses a duplicate', a
 
 	const list = await GET(listEvent(owner, '', signedBindings));
 	expect(list.headers.get('cache-control')).toBe('private, no-store');
-	// Lists carry no presigned URLs: they would expire while the page stays open.
-	expect(await list.json()).toEqual({ items: [payload.item], semanticAvailable: false, hasMore: false });
+	// Lists sign each thumbnail, so tiles load straight from R2; a tile whose signature expired falls back to the media route.
+	const { thumbnail_url, ...listed } = (await list.json()).items[0];
+	expect(listed).toEqual(payload.item);
+	expect(new URL(thumbnail_url).searchParams.get('X-Amz-Signature')).toBeTruthy();
 });
 
 test('adds new and duplicate uploads to the open collection, and rejects a foreign one before writing (#27)', async () => {

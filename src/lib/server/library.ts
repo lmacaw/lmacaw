@@ -3,6 +3,7 @@ import type { Item, SourceMetadata as ClientSourceMetadata } from '$lib/types';
 import type { User } from './auth';
 import { many, now, one, run } from './db';
 import { authMode, type Env } from './env';
+import { mediaSigner } from './media-url';
 import { isThumbnailType, sniffImageType } from './media-validation';
 import { ftsQuery, indexItem } from './search';
 import { copyObject, deleteObject, newKey, putObject } from './storage';
@@ -60,7 +61,9 @@ type ItemPatch = Partial<Omit<InitialFields, 'extractedText'> & {
 	shared: boolean;
 	favorite: boolean;
 }>;
-type ListOptions = { scope?: string | null; collection?: string | null; query?: string; page?: number };
+type ListOptions = { scope?: string | null; collection?: string | null; query?: string; page?: number; cursor?: Cursor | null };
+/** The (created_at, id) of the last item shown: the next page starts after it. */
+export type Cursor = { createdAt: number; id: string };
 
 export class InvalidItemError extends Error {}
 
@@ -126,11 +129,18 @@ export async function getVisibleItem(db: D1Database, owner: string | null | unde
 	return row && mapRow(row);
 }
 
-// Anonymous listings use OFFSET paging, so a deep page reads every row before it: cap at ~5,000 items whatever the page size.
+// The legacy ?page parameter uses OFFSET, so a deep page reads every row before it: cap anonymous callers at ~5,000 items.
+// Cursor paging reads one page of index rows at any depth and has no cap.
 export const anonPageLimit = Math.ceil(5000 / pageSize);
 
-export async function listItems(env: Env, user: User | null, { scope, collection, query = '', page = 1 }: ListOptions):
-	Promise<{ items: ItemDto[]; hasMore: boolean }> {
+export const encodeCursor = ({ createdAt, id }: Cursor) => `${createdAt}_${id}`;
+export function decodeCursor(value: string): Cursor | null {
+	const match = /^(\d{1,16})_([0-9a-z-]{1,64})$/i.exec(value);
+	return match ? { createdAt: Number(match[1]), id: match[2] } : null;
+}
+
+export async function listItems(env: Env, user: User | null, { scope, collection, query = '', page = 1, cursor = null }: ListOptions):
+	Promise<{ items: ItemDto[]; hasMore: boolean; nextCursor: string | null }> {
 	const filters: string[] = [];
 	const params: (string | number)[] = [];
 	const owner = user === null ? undefined : libraryOwner(env, user);
@@ -159,12 +169,29 @@ export async function listItems(env: Env, user: User | null, { scope, collection
 		params.push(queryMatch);
 	}
 
-	const rows = await many<ItemWithAnalysis>(env.DB, `
+	if (cursor) {
+		// A row value seeks the (owner|shared, created_at DESC, id DESC) indexes straight to the cursor.
+		filters.push('(i.created_at, i.id) < (?, ?)');
+		params.push(cursor.createdAt, cursor.id);
+	}
+
+	const rows = await many<ItemWithAnalysis & { created_at: number }>(env.DB, `
 		${itemWithAnalysis} ${searchJoin}
 		WHERE ${filters.join(' AND ') || '1 = 1'} ORDER BY i.created_at DESC, i.id DESC LIMIT ? OFFSET ?
-	`, ...params, pageSize + 1, (page - 1) * pageSize);
-	const items = rows.slice(0, pageSize).map((row) => mapDto(owner, row));
-	return { items, hasMore: rows.length > pageSize };
+	`, ...params, pageSize + 1, cursor ? 0 : (page - 1) * pageSize);
+	const pageRows = rows.slice(0, pageSize);
+	const hasMore = rows.length > pageSize;
+	const last = pageRows.at(-1);
+	// The query above proved each item visible to this caller, so tiles load straight from R2 without a Worker hop per thumbnail.
+	const sign = mediaSigner(env);
+	const items = await Promise.all(pageRows.map(async (row) => ({
+		...mapDto(owner, row),
+		thumbnail_url: sign
+			// No thumbnail (an old copy): the media route serves the original, so sign that with its stored type.
+			? await (row.thumbnail_key ? sign(row.thumbnail_key) : sign(row.storage_key, row.content_type))
+			: `/api/v1/items/${row.id}/media?size=thumbnail`
+	})));
+	return { items, hasMore, nextCursor: hasMore && last ? encodeCursor({ createdAt: last.created_at, id: last.id }) : null };
 }
 
 export function enqueueImageStatement(db: D1Database, itemId: string, ownerId: string) {

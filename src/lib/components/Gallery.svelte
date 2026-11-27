@@ -5,14 +5,14 @@
 	import { tileSrc } from '$lib/media';
 	import type { Item } from '$lib/types';
 
-	type Props = { items: Item[]; loading?: boolean; canCopy: boolean; canShareGif: boolean; shared: boolean; publicLibrary: boolean; onopen: (item: Item) => void; oncopy: (item: Item) => void; onfavorite: (item: Item) => void; onsave: (item: Item) => void; onstale: (item: Item) => void };
-	let { items, loading = false, canCopy, canShareGif, shared, publicLibrary, onopen, oncopy, onfavorite, onsave, onstale }: Props = $props();
+	type Props = { items: Item[]; loading?: boolean; canCopy: boolean; canShareGif: boolean; shared: boolean; publicLibrary: boolean; onopen: (item: Item) => void; oncopy: (item: Item) => void; onplay: (id: string) => void; onfavorite: (item: Item) => void; onsave: (item: Item) => void; onstale: (item: Item) => void };
+	let { items, loading = false, canCopy, canShareGif, shared, publicLibrary, onopen, oncopy, onplay, onfavorite, onsave, onstale }: Props = $props();
 
 	// GIF tiles show the still thumbnail and load the animated original only while playing:
 	// on hover/focus with a mouse, or while mostly on screen on touch (a few at once).
 	const MAX_PLAYING = 4;
 	const playing = new SvelteSet<string>();
-	const play = (id: string, on: boolean) => { if (on) playing.add(id); else playing.delete(id); };
+	const play = (id: string, on: boolean) => { if (on) { playing.add(id); onplay(id); } else playing.delete(id); };
 	const mouse = typeof matchMedia === 'function' && matchMedia('(hover: hover) and (pointer: fine)').matches;
 	const calm = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 	// A GIF must stay on screen briefly before it plays, so a fast scroll fetches no originals.

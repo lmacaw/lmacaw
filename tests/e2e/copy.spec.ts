@@ -83,27 +83,39 @@ test('an animated GIF copies its first frame and says so', async ({ page, contex
 	await expect.poll(() => clipboardImage(page)).toBe('4x4');
 });
 
-test('where files can be shared, a GIF opens the share sheet with the animated original', async ({ page }) => {
+test('where files can be shared, a GIF shares its prefetched animated original', async ({ page }) => {
+	// iOS Safari only shares inside the tap, so a tap before the original has loaded asks for another.
 	await page.addInitScript(() => {
 		const shared: string[] = [];
 		Object.assign(window, { shared });
 		navigator.canShare = () => true;
-		navigator.share = async (data) => {
+		navigator.share = (data) => {
 			const file = data?.files?.[0];
 			if (file) shared.push(`${file.type} ${file.size}`);
-			throw new DOMException('Cancelled', 'AbortError');
+			return Promise.reject(new DOMException('Cancelled', 'AbortError'));
 		};
 	});
+	const sharedCount = () => page.evaluate(() => (window as unknown as { shared: string[] }).shared.length);
 	const gif = await animatedGif();
 	await signInWith(page, { name: 'loop.gif', mimeType: 'image/gif', buffer: gif });
+	await page.route((url) => url.pathname.endsWith('/media') && !url.search, async (route) => {
+		await new Promise((resolve) => setTimeout(resolve, 1500));
+		await route.continue();
+	});
+	await page.locator('[data-meme-tile]').first().click();
+	const share = page.getByRole('dialog').getByRole('button', { name: 'Share GIF' });
+	await share.click();
+	await expect(page.getByRole('dialog').getByRole('status')).toHaveText('Preparing GIF… tap again to share.');
+	expect(await sharedCount()).toBe(0);
+	await expect(async () => { await share.click(); expect(await sharedCount()).toBe(1); }).toPass({ timeout: 10000 });
+	expect(await page.evaluate(() => (window as unknown as { shared: string[] }).shared)).toEqual([`image/gif ${gif.length}`]);
+	await page.getByRole('button', { name: 'Close', exact: true }).click();
+	// The tile shares the cached original on the first tap; cancelling the sheet is not an error.
 	await page.locator('[data-meme-tile]').first().hover();
 	await expect(page.getByRole('button', { name: 'Copy meme' })).toHaveCount(0);
 	await page.getByRole('button', { name: 'Share GIF' }).click();
-	await page.locator('[data-meme-tile]').first().click();
-	await page.getByRole('dialog').getByRole('button', { name: 'Share GIF' }).click();
-	await expect.poll(() => page.evaluate(() => (window as unknown as { shared: string[] }).shared)).toEqual([`image/gif ${gif.length}`, `image/gif ${gif.length}`]);
-	// Cancelling the sheet is not an error.
-	await expect(page.getByRole('dialog').getByRole('status')).toHaveCount(0);
+	await expect.poll(sharedCount).toBe(2);
+	await expect(page.getByRole('status')).not.toHaveText(/Could not share/);
 });
 
 test('without clipboard support the interface says so and offers download', async ({ page }) => {

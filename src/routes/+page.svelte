@@ -262,6 +262,7 @@
 
 	async function openItem(item: Item) {
 		current = item; itemCollections = [];
+		if (canShareGif && item.content_type === 'image/gif') void prefetchGif(item.id);
 		if (scope === 'shared') return;
 		const response = await fetch(`/api/v1/collections?${new URLSearchParams({ item: item.id })}`);
 		if (response.ok && current?.id === item.id) itemCollections = (await response.json()).collections;
@@ -303,19 +304,41 @@
 		return new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => (value ? resolve(value) : reject(new Error('Copy failed'))), 'image/png'));
 	}
 	// Messengers keep a shared GIF file animated, unlike the first frame a clipboard holds.
-	async function shareGif(item: Item) {
+	// iOS Safari refuses a share that starts after an await (the tap no longer counts), so the
+	// original is prefetched when a GIF opens or plays, and a tap shares it synchronously.
+	const gifBlobs = new Map<string, Blob>(), gifFetches = new Map<string, Promise<boolean>>();
+	function prefetchGif(id: string): Promise<boolean> {
+		if (gifBlobs.has(id)) return Promise.resolve(true);
+		let pending = gifFetches.get(id);
+		if (!pending) {
+			pending = fetch(`/api/v1/items/${id}/media`).then((response) => (response.ok ? response.blob() : Promise.reject()))
+				.then((blob) => {
+					gifBlobs.set(id, blob);
+					if (gifBlobs.size > 10) gifBlobs.delete(gifBlobs.keys().next().value!); // ponytail: FIFO cap of 10, LRU if users bounce between many GIFs
+					return true;
+				}, () => false)
+				.finally(() => gifFetches.delete(id));
+			gifFetches.set(id, pending);
+		}
+		return pending;
+	}
+	function shareGif(item: Item) {
+		const blob = gifBlobs.get(item.id);
+		if (!blob) {
+			notify('Preparing GIF… tap again to share.');
+			void prefetchGif(item.id).then((ok) => { if (!ok) notify('Could not load GIF. Download the original instead.', item); });
+			return;
+		}
 		if (sharing) return; // a second share while the sheet is open throws InvalidStateError
 		sharing = true;
-		try {
-			const response = await fetch(`/api/v1/items/${item.id}/media`);
-			if (!response.ok) throw new Error('Media unavailable');
-			await navigator.share({ files: [new File([await response.blob()], 'meme.gif', { type: 'image/gif' })] });
-		} catch (error) {
-			if ((error as Error).name !== 'AbortError') notify('Could not share. Download the original instead.', item);
-		} finally { sharing = false; }
+		let share: Promise<void>;
+		try { share = navigator.share({ files: [new File([blob], 'meme.gif', { type: 'image/gif' })] }); }
+		catch (error) { share = Promise.reject(error); }
+		share.catch((error: Error) => { if (error.name !== 'AbortError') notify('Could not share. Download the original instead.', item); })
+			.finally(() => (sharing = false));
 	}
 	function copyImage(item: Item) {
-		if (canShareGif && item.content_type === 'image/gif') { void shareGif(item); return; }
+		if (canShareGif && item.content_type === 'image/gif') { shareGif(item); return; }
 		if (!canCopy) { notify('This browser cannot copy images. Download the original instead.', item); return; }
 		// Write synchronously inside the click, passing the image as a promise. Firefox and Safari
 		// reject a clipboard write that starts after an await, because the click no longer counts.
@@ -508,7 +531,7 @@
 					<div class="empty"><p>{discovering ? 'Searching…' : 'Search openly licensed images on Openverse.'}</p><p class="hint">Results may include few memes. Check each license at its source.</p></div>
 				{/if}
 			{:else if items.length}
-				<Gallery {items} loading={loadingMore} {canCopy} {canShareGif} {publicLibrary} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} onstale={(item) => patchLocal(item.id, { thumbnail_url: undefined })} />
+				<Gallery {items} loading={loadingMore} {canCopy} {canShareGif} {publicLibrary} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onplay={(id) => { if (canShareGif) void prefetchGif(id); }} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} onstale={(item) => patchLocal(item.id, { thumbnail_url: undefined })} />
 				{#if hasMore && moreFailed}<div class="more"><button class="button ghost" onclick={() => refresh(true)}>Load more</button></div>
 				{:else if hasMore && !loadingMore}<div class="sentinel" aria-hidden="true" {@attach nearEnd}></div>{/if}
 			{:else if loadFailed}

@@ -25,13 +25,25 @@
 	let emailInput = $state<HTMLInputElement>(undefined!);
 	let signInPending = $state(false), signInSent = $state(false);
 	let message = $state(''), messageDownload = $state<Item | null>(null), messageTimer: ReturnType<typeof setTimeout> | undefined;
-	let canCopy = $state(true), menuButton: HTMLButtonElement = $state(undefined!);
+	let canCopy = $state(true), canShareGif = $state(false), sharing = false, menuButton: HTMLButtonElement = $state(undefined!);
 	let pasteKey = $state('Ctrl+V'), dropActive = $state(false);
 	let staged: { id: string; file: File; hash: string; preview: string; failed: boolean }[] = $state([]), stageNote = $state('');
 	let uploading = $state(0), retryEntries: typeof staged = $state([]);
 	const view = $derived(viewFromUrl(page.url));
 	const selectedScope = $derived(view.scope), selectedCollection = $derived(view.collection);
 	let query = $state('');
+	let searchFocused = $state(false);
+	let searchInput: HTMLInputElement | undefined = $state();
+	function closeSearch() { query = ''; queueSearch(); searchInput?.blur(); }
+	// Mobile header hides while scrolling down and returns on any scroll up (CSS applies it under 720px only).
+	let headerAway = $state(false);
+	let lastScrollY = 0;
+	function trackScroll() {
+		const y = window.scrollY;
+		if (Math.abs(y - lastScrollY) < 8) return;
+		headerAway = y > lastScrollY && y > 80;
+		lastScrollY = y;
+	}
 	const scope = $derived<Scope>(publicLibrary ? 'shared' : selectedScope);
 	let theme = $state<'system' | 'light' | 'dark'>('system'), menuOpen = $state(false), dragging = $state(false);
 	let items: Item[] = $state([]), loaded = $state(false), loadFailed = $state(false), hasMore = $state(false), loadingMore = $state(false), moreFailed = $state(false), nextCursor: string | null = null, semanticAvailable = $state(false);
@@ -262,6 +274,7 @@
 
 	async function openItem(item: Item) {
 		current = item; itemCollections = [];
+		if (canShareGif && item.content_type === 'image/gif') void prefetchGif(item.id);
 		if (scope === 'shared') return;
 		const response = await fetch(`/api/v1/collections?${new URLSearchParams({ item: item.id })}`);
 		if (response.ok && current?.id === item.id) itemCollections = (await response.json()).collections;
@@ -302,7 +315,42 @@
 		context.drawImage(image, 0, 0); image.close();
 		return new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => (value ? resolve(value) : reject(new Error('Copy failed'))), 'image/png'));
 	}
+	// Messengers keep a shared GIF file animated, unlike the first frame a clipboard holds.
+	// iOS Safari refuses a share that starts after an await (the tap no longer counts), so the
+	// original is prefetched when a GIF opens or plays, and a tap shares it synchronously.
+	const gifBlobs = new Map<string, Blob>(), gifFetches = new Map<string, Promise<boolean>>();
+	function prefetchGif(id: string): Promise<boolean> {
+		if (gifBlobs.has(id)) return Promise.resolve(true);
+		let pending = gifFetches.get(id);
+		if (!pending) {
+			pending = fetch(`/api/v1/items/${id}/media`).then((response) => (response.ok ? response.blob() : Promise.reject()))
+				.then((blob) => {
+					gifBlobs.set(id, blob);
+					if (gifBlobs.size > 10) gifBlobs.delete(gifBlobs.keys().next().value!); // ponytail: FIFO cap of 10, LRU if users bounce between many GIFs
+					return true;
+				}, () => false)
+				.finally(() => gifFetches.delete(id));
+			gifFetches.set(id, pending);
+		}
+		return pending;
+	}
+	function shareGif(item: Item) {
+		const blob = gifBlobs.get(item.id);
+		if (!blob) {
+			notify('Preparing GIF… tap again to share.');
+			void prefetchGif(item.id).then((ok) => { if (!ok) notify('Could not load GIF. Download the original instead.', item); });
+			return;
+		}
+		if (sharing) return; // a second share while the sheet is open throws InvalidStateError
+		sharing = true;
+		let share: Promise<void>;
+		try { share = navigator.share({ files: [new File([blob], 'meme.gif', { type: 'image/gif' })] }); }
+		catch (error) { share = Promise.reject(error); }
+		share.catch((error: Error) => { if (error.name !== 'AbortError') notify('Could not share. Download the original instead.', item); })
+			.finally(() => (sharing = false));
+	}
 	function copyImage(item: Item) {
+		if (canShareGif && item.content_type === 'image/gif') { shareGif(item); return; }
 		if (!canCopy) { notify('This browser cannot copy images. Download the original instead.', item); return; }
 		// Write synchronously inside the click, passing the image as a promise. Firefox and Safari
 		// reject a clipboard write that starts after an await, because the click no longer counts.
@@ -391,6 +439,7 @@
 		ready = true;
 		// Missing on older browsers and on plain-HTTP origins other than localhost.
 		canCopy = window.isSecureContext && typeof ClipboardItem === 'function' && typeof navigator.clipboard?.write === 'function';
+		try { canShareGif = navigator.canShare?.({ files: [new File([], 'meme.gif', { type: 'image/gif' })] }) ?? false; } catch { /* no file sharing */ }
 		if (/Mac|iPhone|iPad/.test(navigator.userAgent)) pasteKey = '⌘V';
 		// app.html already applied the saved theme; sync the toggle with it.
 		const saved = document.documentElement.dataset.theme;
@@ -409,7 +458,7 @@
 </script>
 
 <!-- Leaving mid-upload drops the rest of the queue, so the browser asks first. -->
-<svelte:window onbeforeunload={(event) => { if (uploading) event.preventDefault(); }} />
+<svelte:window onscroll={trackScroll} onbeforeunload={(event) => { if (uploading) event.preventDefault(); }} />
 
 <svelte:head><title>{user && !publicLibrary ? `${title} · Lmacaw` : 'Lmacaw'}</title></svelte:head>
 
@@ -450,7 +499,7 @@
 			/>
 		{/if}
 		<main class="workspace" inert={menuOpen}>
-			<header class="topbar">
+			<header class="topbar" class:searching={searchFocused || query} class:away={headerAway && !searchFocused && !menuOpen}>
 				{#if publicLibrary}
 					<h1><a class="brand" href="/"><img class="brand-mark" src="/favicon.svg" alt="" width="24" height="24" />Lmacaw</a></h1>
 				{:else}
@@ -462,12 +511,12 @@
 					<button class="icon-button" aria-label="Delete collection" title="Delete collection" onclick={deleteCollection}><Icon name="trash" size={16} /></button>
 				{/if}
 				<div class="search">
-					<Icon name="search" size={15} />
-					<label class="sr-only" for="search">Search</label>
-					<input id="search" type="search" placeholder={scope === 'discover' ? 'Search Openverse' : 'Search'} bind:value={query} oninput={queueSearch} onkeydown={(event) => { if (event.key === 'Enter' && scope === 'discover') void discover(); }} />
+					<label class="search-icon" for="search"><Icon name="search" size={15} /><span class="sr-only">Search</span></label>
+					<input id="search" type="search" bind:this={searchInput} onfocus={() => (searchFocused = true)} onblur={() => (searchFocused = false)} placeholder={scope === 'discover' ? 'Search Openverse' : 'Search'} bind:value={query} oninput={queueSearch} onkeydown={(event) => { if (event.key === 'Enter' && scope === 'discover') void discover(); }} />
+					<button class="icon-button search-close" aria-label="Close search" onpointerdown={(event) => event.preventDefault()} onclick={closeSearch}><Icon name="x" size={16} /></button>
 				</div>
 				{#if !publicLibrary}
-					<button class="button primary add-button" disabled={!ready} onclick={() => openForm('add')}><Icon name="plus" size={15} />Add</button>
+					<button class="button primary add-button" disabled={!ready} onclick={() => openForm('add')}><Icon name="plus" size={15} /><span class="add-label">Add</span></button>
 					{#if ready}<input hidden bind:this={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onchange={(event) => { if (event.currentTarget.files) void stage(event.currentTarget.files); event.currentTarget.value = ''; }} />{/if}
 				{:else}
 					<!-- Public visitors have no sidebar, so the appearance toggle lives here. -->
@@ -494,7 +543,7 @@
 					<div class="empty"><p>{discovering ? 'Searching…' : 'Search openly licensed images on Openverse.'}</p><p class="hint">Results may include few memes. Check each license at its source.</p></div>
 				{/if}
 			{:else if items.length}
-				<Gallery {items} loading={loadingMore} {canCopy} {publicLibrary} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} onstale={(item) => patchLocal(item.id, { thumbnail_url: undefined })} />
+				<Gallery {items} loading={loadingMore} {canCopy} {canShareGif} {publicLibrary} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onplay={(id) => { if (canShareGif) void prefetchGif(id); }} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} onstale={(item) => patchLocal(item.id, { thumbnail_url: undefined })} />
 				{#if hasMore && moreFailed}<div class="more"><button class="button ghost" onclick={() => refresh(true)}>Load more</button></div>
 				{:else if hasMore && !loadingMore}<div class="sentinel" aria-hidden="true" {@attach nearEnd}></div>{/if}
 			{:else if loadFailed}
@@ -513,7 +562,7 @@
 	</div>
 
 	<DetailDialog
-		item={current} {canCopy} {publicLibrary} {publicMode} readonly={scope === 'shared'} collections={itemCollections} message={current ? message : ''} aiEnabled={data.aiEnabled}
+		item={current} {canCopy} {canShareGif} {publicLibrary} {publicMode} readonly={scope === 'shared'} collections={itemCollections} message={current ? message : ''} aiEnabled={data.aiEnabled}
 		onclose={() => (current = null)} oncopy={copyImage} onupdate={updateItem} ondelete={removeItem}
 		onsave={saveShared} onretry={retryAi} ontogglecollection={toggleCollection}
 	/>

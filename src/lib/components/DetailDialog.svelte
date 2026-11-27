@@ -6,12 +6,12 @@
 	import type { Collection, Item } from '$lib/types';
 
 	type Props = {
-		item: Item | null; canCopy: boolean; readonly: boolean; publicLibrary: boolean; publicMode: boolean; collections: Collection[]; message: string; aiEnabled: boolean;
+		item: Item | null; canCopy: boolean; canShareGif: boolean; readonly: boolean; publicLibrary: boolean; publicMode: boolean; collections: Collection[]; message: string; aiEnabled: boolean;
 		onclose: () => void; oncopy: (item: Item) => void; onupdate: (item: Item, patch: Record<string, unknown>) => void;
 		ondelete: (item: Item) => void; onsave: (item: Item) => void; onretry: (item: Item) => void;
 		ontogglecollection: (collection: Collection, checked: boolean) => void;
 	};
-	let { item, canCopy, readonly, publicLibrary, publicMode, collections, message, aiEnabled, onclose, oncopy, onupdate, ondelete, onsave, onretry, ontogglecollection }: Props = $props();
+	let { item, canCopy, canShareGif, readonly, publicLibrary, publicMode, collections, message, aiEnabled, onclose, oncopy, onupdate, ondelete, onsave, onretry, ontogglecollection }: Props = $props();
 	const readOnly = $derived(readonly || publicLibrary);
 	let dialog = $state<HTMLDialogElement>(undefined!);
 	let description = $state(''), tags = $state(''), text = $state(''), loadedId = '', decodedId = $state('');
@@ -53,7 +53,8 @@
 			</div>
 			<div class="detail-panel">
 				<div class="detail-toolbar">
-					{#if canCopy}<button class="icon-button" onclick={() => oncopy(item)} aria-label="Copy image" title="Copy image"><Icon name="copy" /></button>{/if}
+					{#if canShareGif && item.content_type === 'image/gif'}<button class="icon-button" onclick={() => oncopy(item)} aria-label="Share GIF" title="Share GIF"><Icon name="send" /></button>
+					{:else if canCopy}<button class="icon-button" onclick={() => oncopy(item)} aria-label="Copy image" title="Copy image"><Icon name="copy" /></button>{/if}
 					<a class="icon-button" href={`${mediaRoute}?download=1`} download aria-label="Download" title="Download"><Icon name="download" /></a>
 					{#if !publicLibrary && readonly}
 						<button class="icon-button" onclick={() => onsave(item)} aria-label="Save to library" title="Save to library"><Icon name="bookmark" /></button>

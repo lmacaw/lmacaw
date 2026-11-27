@@ -5,8 +5,8 @@
 	import { tileSrc } from '$lib/media';
 	import type { Item } from '$lib/types';
 
-	type Props = { items: Item[]; loading?: boolean; canCopy: boolean; shared: boolean; publicLibrary: boolean; onopen: (item: Item) => void; oncopy: (item: Item) => void; onfavorite: (item: Item) => void; onsave: (item: Item) => void; onstale: (item: Item) => void };
-	let { items, loading = false, canCopy, shared, publicLibrary, onopen, oncopy, onfavorite, onsave, onstale }: Props = $props();
+	type Props = { items: Item[]; loading?: boolean; canCopy: boolean; canShareGif: boolean; shared: boolean; publicLibrary: boolean; onopen: (item: Item) => void; oncopy: (item: Item) => void; onfavorite: (item: Item) => void; onsave: (item: Item) => void; onstale: (item: Item) => void };
+	let { items, loading = false, canCopy, canShareGif, shared, publicLibrary, onopen, oncopy, onfavorite, onsave, onstale }: Props = $props();
 
 	// GIF tiles show the still thumbnail and load the animated original only while playing:
 	// on hover/focus with a mouse, or while mostly on screen on touch (a few at once).
@@ -58,7 +58,9 @@
 					onerror={() => { if (item.thumbnail_url && src === item.thumbnail_url) onstale(item); }} />
 			</button>
 			<div class="tile-actions">
-				{#if canCopy}
+				{#if gif && canShareGif}
+					<button class="tile-action" aria-label="Share GIF" title="Share" onclick={() => oncopy(item)}><Icon name="send" size={16} /></button>
+				{:else if canCopy}
 					<button class="tile-action" aria-label="Copy meme" title="Copy" onclick={() => oncopy(item)}><Icon name="copy" size={16} /></button>
 				{/if}
 				{#if publicLibrary || !canCopy}

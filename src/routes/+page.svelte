@@ -25,7 +25,7 @@
 	let emailInput = $state<HTMLInputElement>(undefined!);
 	let signInPending = $state(false), signInSent = $state(false);
 	let message = $state(''), messageDownload = $state<Item | null>(null), messageTimer: ReturnType<typeof setTimeout> | undefined;
-	let canCopy = $state(true), menuButton: HTMLButtonElement = $state(undefined!);
+	let canCopy = $state(true), canShareGif = $state(false), sharing = false, menuButton: HTMLButtonElement = $state(undefined!);
 	let pasteKey = $state('Ctrl+V'), dropActive = $state(false);
 	let staged: { id: string; file: File; hash: string; preview: string; failed: boolean }[] = $state([]), stageNote = $state('');
 	let uploading = $state(0), retryEntries: typeof staged = $state([]);
@@ -302,7 +302,20 @@
 		context.drawImage(image, 0, 0); image.close();
 		return new Promise<Blob>((resolve, reject) => canvas.toBlob((value) => (value ? resolve(value) : reject(new Error('Copy failed'))), 'image/png'));
 	}
+	// Messengers keep a shared GIF file animated, unlike the first frame a clipboard holds.
+	async function shareGif(item: Item) {
+		if (sharing) return; // a second share while the sheet is open throws InvalidStateError
+		sharing = true;
+		try {
+			const response = await fetch(`/api/v1/items/${item.id}/media`);
+			if (!response.ok) throw new Error('Media unavailable');
+			await navigator.share({ files: [new File([await response.blob()], 'meme.gif', { type: 'image/gif' })] });
+		} catch (error) {
+			if ((error as Error).name !== 'AbortError') notify('Could not share. Download the original instead.', item);
+		} finally { sharing = false; }
+	}
 	function copyImage(item: Item) {
+		if (canShareGif && item.content_type === 'image/gif') { void shareGif(item); return; }
 		if (!canCopy) { notify('This browser cannot copy images. Download the original instead.', item); return; }
 		// Write synchronously inside the click, passing the image as a promise. Firefox and Safari
 		// reject a clipboard write that starts after an await, because the click no longer counts.
@@ -391,6 +404,7 @@
 		ready = true;
 		// Missing on older browsers and on plain-HTTP origins other than localhost.
 		canCopy = window.isSecureContext && typeof ClipboardItem === 'function' && typeof navigator.clipboard?.write === 'function';
+		try { canShareGif = navigator.canShare?.({ files: [new File([], 'meme.gif', { type: 'image/gif' })] }) ?? false; } catch { /* no file sharing */ }
 		if (/Mac|iPhone|iPad/.test(navigator.userAgent)) pasteKey = '⌘V';
 		// app.html already applied the saved theme; sync the toggle with it.
 		const saved = document.documentElement.dataset.theme;
@@ -494,7 +508,7 @@
 					<div class="empty"><p>{discovering ? 'Searching…' : 'Search openly licensed images on Openverse.'}</p><p class="hint">Results may include few memes. Check each license at its source.</p></div>
 				{/if}
 			{:else if items.length}
-				<Gallery {items} loading={loadingMore} {canCopy} {publicLibrary} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} onstale={(item) => patchLocal(item.id, { thumbnail_url: undefined })} />
+				<Gallery {items} loading={loadingMore} {canCopy} {canShareGif} {publicLibrary} shared={scope === 'shared'} onopen={openItem} oncopy={copyImage} onfavorite={(item) => updateItem(item, { favorite: !item.favorite })} onsave={saveShared} onstale={(item) => patchLocal(item.id, { thumbnail_url: undefined })} />
 				{#if hasMore && moreFailed}<div class="more"><button class="button ghost" onclick={() => refresh(true)}>Load more</button></div>
 				{:else if hasMore && !loadingMore}<div class="sentinel" aria-hidden="true" {@attach nearEnd}></div>{/if}
 			{:else if loadFailed}
@@ -513,7 +527,7 @@
 	</div>
 
 	<DetailDialog
-		item={current} {canCopy} {publicLibrary} {publicMode} readonly={scope === 'shared'} collections={itemCollections} message={current ? message : ''} aiEnabled={data.aiEnabled}
+		item={current} {canCopy} {canShareGif} {publicLibrary} {publicMode} readonly={scope === 'shared'} collections={itemCollections} message={current ? message : ''} aiEnabled={data.aiEnabled}
 		onclose={() => (current = null)} oncopy={copyImage} onupdate={updateItem} ondelete={removeItem}
 		onsave={saveShared} onretry={retryAi} ontogglecollection={toggleCollection}
 	/>

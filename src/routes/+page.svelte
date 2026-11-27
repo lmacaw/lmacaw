@@ -32,6 +32,18 @@
 	const view = $derived(viewFromUrl(page.url));
 	const selectedScope = $derived(view.scope), selectedCollection = $derived(view.collection);
 	let query = $state('');
+	let searchFocused = $state(false);
+	let searchInput: HTMLInputElement | undefined = $state();
+	function closeSearch() { query = ''; queueSearch(); searchInput?.blur(); }
+	// Mobile header hides while scrolling down and returns on any scroll up (CSS applies it under 720px only).
+	let headerAway = $state(false);
+	let lastScrollY = 0;
+	function trackScroll() {
+		const y = window.scrollY;
+		if (Math.abs(y - lastScrollY) < 8) return;
+		headerAway = y > lastScrollY && y > 80;
+		lastScrollY = y;
+	}
 	const scope = $derived<Scope>(publicLibrary ? 'shared' : selectedScope);
 	let theme = $state<'system' | 'light' | 'dark'>('system'), menuOpen = $state(false), dragging = $state(false);
 	let items: Item[] = $state([]), loaded = $state(false), loadFailed = $state(false), hasMore = $state(false), loadingMore = $state(false), moreFailed = $state(false), nextCursor: string | null = null, semanticAvailable = $state(false);
@@ -409,7 +421,7 @@
 </script>
 
 <!-- Leaving mid-upload drops the rest of the queue, so the browser asks first. -->
-<svelte:window onbeforeunload={(event) => { if (uploading) event.preventDefault(); }} />
+<svelte:window onscroll={trackScroll} onbeforeunload={(event) => { if (uploading) event.preventDefault(); }} />
 
 <svelte:head><title>{user && !publicLibrary ? `${title} · Lmacaw` : 'Lmacaw'}</title></svelte:head>
 
@@ -450,7 +462,7 @@
 			/>
 		{/if}
 		<main class="workspace" inert={menuOpen}>
-			<header class="topbar">
+			<header class="topbar" class:searching={searchFocused || query} class:away={headerAway && !searchFocused && !menuOpen}>
 				{#if publicLibrary}
 					<h1><a class="brand" href="/"><img class="brand-mark" src="/favicon.svg" alt="" width="24" height="24" />Lmacaw</a></h1>
 				{:else}
@@ -462,12 +474,12 @@
 					<button class="icon-button" aria-label="Delete collection" title="Delete collection" onclick={deleteCollection}><Icon name="trash" size={16} /></button>
 				{/if}
 				<div class="search">
-					<Icon name="search" size={15} />
-					<label class="sr-only" for="search">Search</label>
-					<input id="search" type="search" placeholder={scope === 'discover' ? 'Search Openverse' : 'Search'} bind:value={query} oninput={queueSearch} onkeydown={(event) => { if (event.key === 'Enter' && scope === 'discover') void discover(); }} />
+					<label class="search-icon" for="search"><Icon name="search" size={15} /><span class="sr-only">Search</span></label>
+					<input id="search" type="search" bind:this={searchInput} onfocus={() => (searchFocused = true)} onblur={() => (searchFocused = false)} placeholder={scope === 'discover' ? 'Search Openverse' : 'Search'} bind:value={query} oninput={queueSearch} onkeydown={(event) => { if (event.key === 'Enter' && scope === 'discover') void discover(); }} />
+					<button class="icon-button search-close" aria-label="Close search" onpointerdown={(event) => event.preventDefault()} onclick={closeSearch}><Icon name="x" size={16} /></button>
 				</div>
 				{#if !publicLibrary}
-					<button class="button primary add-button" disabled={!ready} onclick={() => openForm('add')}><Icon name="plus" size={15} />Add</button>
+					<button class="button primary add-button" disabled={!ready} onclick={() => openForm('add')}><Icon name="plus" size={15} /><span class="add-label">Add</span></button>
 					{#if ready}<input hidden bind:this={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onchange={(event) => { if (event.currentTarget.files) void stage(event.currentTarget.files); event.currentTarget.value = ''; }} />{/if}
 				{:else}
 					<!-- Public visitors have no sidebar, so the appearance toggle lives here. -->

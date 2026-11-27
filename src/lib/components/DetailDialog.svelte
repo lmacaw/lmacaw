@@ -1,18 +1,20 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
+	import { lightDismiss } from '$lib/dialog';
+	import { tileSrc } from '$lib/media';
 	import { shareTitle } from '$lib/share';
 	import type { Collection, Item } from '$lib/types';
 
 	type Props = {
-		item: Item | null; canCopy: boolean; readonly: boolean; publicLibrary: boolean; publicMode: boolean; collections: Collection[]; message: string; aiEnabled: boolean;
+		item: Item | null; canCopy: boolean; canShareGif: boolean; readonly: boolean; publicLibrary: boolean; publicMode: boolean; collections: Collection[]; message: string; aiEnabled: boolean;
 		onclose: () => void; oncopy: (item: Item) => void; onupdate: (item: Item, patch: Record<string, unknown>) => void;
 		ondelete: (item: Item) => void; onsave: (item: Item) => void; onretry: (item: Item) => void;
 		ontogglecollection: (collection: Collection, checked: boolean) => void;
 	};
-	let { item, canCopy, readonly, publicLibrary, publicMode, collections, message, aiEnabled, onclose, oncopy, onupdate, ondelete, onsave, onretry, ontogglecollection }: Props = $props();
+	let { item, canCopy, canShareGif, readonly, publicLibrary, publicMode, collections, message, aiEnabled, onclose, oncopy, onupdate, ondelete, onsave, onretry, ontogglecollection }: Props = $props();
 	const readOnly = $derived(readonly || publicLibrary);
 	let dialog = $state<HTMLDialogElement>(undefined!);
-	let description = $state(''), tags = $state(''), text = $state(''), loadedId = '';
+	let description = $state(''), tags = $state(''), text = $state(''), loadedId = '', decodedId = $state('');
 
 	// Reset the form only when a different item opens, so a save does not wipe unsaved typing elsewhere.
 	$effect(() => {
@@ -37,14 +39,22 @@
 	const aiLabel = $derived(!aiEnabled || !item ? '' : item.ai_state === 'failed' ? 'Analysis failed' : item.ai_state === 'leased' ? 'Analyzing…' : item.ai_state === 'pending' ? 'Queued for AI analysis' : '');
 </script>
 
-<dialog bind:this={dialog} class="detail-dialog" aria-label="Meme details" onclose={onclose}>
+<dialog bind:this={dialog} use:lightDismiss class="detail-dialog" aria-label="Meme details" onclose={onclose}>
 	{#if item}
 		{@const mediaRoute = `/api/v1/items/${item.id}/media`}
+		{@const placeholder = tileSrc(item)}
 		<div class="detail">
-			<div class="detail-media"><img src={mediaRoute} alt={item.description || item.ai_description || 'Meme'} /></div>
+			<!-- The tile's image is already cached: show it at once at the original's size, under the original. -->
+			<div class="detail-media">
+				<div class="detail-frame" style:--w={item.width} style:--h={item.height}>
+					{#if placeholder !== mediaRoute && decodedId !== item.id}<img class="detail-placeholder" src={placeholder} alt="" />{/if}
+					<img src={mediaRoute} alt={item.description || item.ai_description || 'Meme'} onload={() => (decodedId = item.id)} />
+				</div>
+			</div>
 			<div class="detail-panel">
 				<div class="detail-toolbar">
-					{#if canCopy}<button class="icon-button" onclick={() => oncopy(item)} aria-label="Copy image" title="Copy image"><Icon name="copy" /></button>{/if}
+					{#if canShareGif && item.content_type === 'image/gif'}<button class="icon-button" onclick={() => oncopy(item)} aria-label="Share GIF" title="Share GIF"><Icon name="send" /></button>
+					{:else if canCopy}<button class="icon-button" onclick={() => oncopy(item)} aria-label="Copy image" title="Copy image"><Icon name="copy" /></button>{/if}
 					<a class="icon-button" href={`${mediaRoute}?download=1`} download aria-label="Download" title="Download"><Icon name="download" /></a>
 					{#if !publicLibrary && readonly}
 						<button class="icon-button" onclick={() => onsave(item)} aria-label="Save to library" title="Save to library"><Icon name="bookmark" /></button>

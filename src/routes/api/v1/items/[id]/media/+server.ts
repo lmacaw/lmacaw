@@ -1,6 +1,6 @@
 import { getEnv } from '$lib/server/env';
 import { getVisibleItem, libraryOwner, validItemId } from '$lib/server/library';
-import { mediaUrl } from '$lib/server/media-url';
+import { immutable, mediaUrl, signingWindow } from '$lib/server/media-url';
 import { requireRole } from '$lib/server/request';
 import type { RequestHandler } from './$types';
 
@@ -27,15 +27,15 @@ export const GET: RequestHandler = async (event) => {
 	// R2 serves the content type stored with the object, so a thumbnail needs no override.
 	const signed = await mediaUrl(env, key, thumbnail ? undefined : item.contentType, filename);
 	if (signed) {
-		// The signature lasts 10 minutes; let the browser reuse this redirect for 5 of them.
-		return new Response(null, { status: 302, headers: { location: signed, 'cache-control': 'private, max-age=300' } });
+		// The signature outlives its hour by one more, so the browser may reuse this redirect for an hour.
+		return new Response(null, { status: 302, headers: { location: signed, 'cache-control': `private, max-age=${signingWindow}` } });
 	}
 
 	const object = await env.MEDIA.get(key);
 	if (!object) return new Response(null, { status: 404 });
 	const headers = new Headers({
 		'content-type': object.httpMetadata?.contentType ?? item.contentType,
-		'cache-control': 'private, max-age=300',
+		'cache-control': immutable,
 		'x-content-type-options': 'nosniff'
 	});
 	if (filename) headers.set('content-disposition', `attachment; filename="${filename}"`);

@@ -1,5 +1,6 @@
 {
   "name": "lmacaw",
+  "account_id": "5a8c36401f47fc6f64a5edcdfc2546a3",
   "main": "cloudflare/entry.ts",
   "compatibility_date": "2026-11-01",
   "assets": {
@@ -10,7 +11,7 @@
     {
       "binding": "DB",
       "database_name": "lmacaw",
-      "database_id": "d7bc541f-b3ce-4ca7-9a5a-09e3644c9446",
+      "database_id": "c2648f9d-4e58-412e-8e16-1269c37c7122",
       "migrations_dir": "migrations"
     }
   ],
@@ -27,8 +28,8 @@
     "ADMIN_HOST": "admin.lmacaw.meme",
     "ORIGIN": "https://lmacaw.meme,https://admin.lmacaw.meme",
     "R2_BUCKET": "lmacaw-media",
-    "ACCESS_TEAM_DOMAIN": "phucnht.cloudflareaccess.com",
-    "ACCESS_AUD": "49b7c55e6fe2d4ba793ccf79d932654738f163641e7f8825a87884223cd16724",
+    "ACCESS_TEAM_DOMAIN": "lmacaw.cloudflareaccess.com",
+    "ACCESS_AUD": "2e55598c5cf931b08ed1cabfe17f178e14c530d23ac7a9dfaab25307ac1b2b45",
     "MAIL_FROM": "Lmacaw <hello@lmacaw.meme>"
   }
 }
